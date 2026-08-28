@@ -178,30 +178,45 @@ AGENDA_INSTRUCTION = """\
 Below are recent dated updates, oldest first, for every project and for every
 person whose 1-1 notes are kept, and then today's date.
 
-Return a JSON array of what needs attention now, across all of them.
+Return a JSON array of what needs attention now, across all of them. Be
+thorough: it is worse to drop a real commitment than to return one more row.
 
-An item is something the updates put on a day — a deadline, a cutover, a
-recurring report, a meeting, a promise with a date attached — that falls today,
-is coming up, or has already passed with nothing in the updates saying it was
-done. A commitment made to a person in a 1-1 counts exactly as much as one made
-in a project update.
+Each item is one of three kinds.
+
+  "date"     something the updates put on a day — a deadline, a cutover, a
+             recurring report, a meeting, a promise with a date attached — that
+             falls today, is coming up, or has already passed with nothing
+             saying it was done.
+  "todo"     something someone said they would do, with no date attached, that
+             nothing since says is done. Name who it is on where the updates do.
+  "insight"  something you would want to know walking into a conversation, that
+             is neither a task nor a date: a decision taken, a risk or blocker,
+             a dependency, a number, a position someone has taken.
+
+A commitment made to a person in a 1-1 counts exactly as much as one made in a
+project update.
 
 Each item is an object with exactly these keys:
   "project_id"  the number after "# Project" or "# Person" in the heading
                 above those updates — the number itself, not the name
-  "when"        one of: "overdue", "today", "this week", "later"
+  "kind"        one of: "date", "todo", "insight"
+  "when"        for a "date": one of "overdue", "today", "this week", "later".
+                null for the other two kinds.
   "text"        one short line. Imperative if it is something to do
                 ("Send the UxM update"), plain if it is an event
-                ("Kafka migration cuts over")
+                ("Kafka migration cuts over") or an insight
+                ("Legal has not come back; it is blocking the cutover")
   "quote"       a few words copied from the update this came from
-  "date"        the date it falls on as YYYY-MM-DD, or null if the updates
-                only say something like "Thursdays" or "next week"
+  "date"        for a "date": the day it falls on as YYYY-MM-DD, or null if the
+                updates only say something like "Thursdays" or "next week".
+                null for the other two kinds.
 
 Rules: use only what is in the updates. Do not invent dates, owners, or
 outcomes, and do not carry an item forward if a later update says it is done.
 Work out "overdue" and "today" against the date given at the end, not against
-your own idea of the date. Most urgent first. At most 12 items. If nothing in
-the updates is tied to a day, return an empty array.
+your own idea of the date. Order by how much it matters, most pressing first.
+At most 20 items. If the updates say nothing worth surfacing, return an empty
+array.
 
 Output the JSON array and nothing else: no prose, no explanation, no code
 fence."""
@@ -234,8 +249,16 @@ def agenda_context(today: str, projects: list[dict]) -> str:
 
 WHENS = ("overdue", "today", "this week", "later")
 
+# What a row can be. A pane that only kept things with a date on them threw
+# away most of what an update actually says: "Vikram to submit the NPRQ" has no
+# date and is still the thing you need to chase, and "Adam wants to pick this up
+# in September" is neither a task nor a date but you would want to know it
+# walking into the room. Three kinds, ranked in this order, so the pane's top is
+# still what is most urgent.
+KINDS = ("date", "todo", "insight")
 
-def _items(raw: str, projects: list[dict]) -> list[dict]:
+
+def _items(raw: str, projects: list[dict], cap: int = 12) -> list[dict]:
     """Parse the model's array, and throw away anything that is not an item.
 
     A pane that renders half-formed rows is worse than one that renders fewer,
@@ -266,7 +289,7 @@ def _items(raw: str, projects: list[dict]) -> list[dict]:
         raise AIError("Claude did not return a list")
 
     out = []
-    for it in data[:12]:
+    for it in data[:cap]:
         if not isinstance(it, dict):
             continue
         body = str(it.get("text") or "").strip()
@@ -279,21 +302,35 @@ def _items(raw: str, projects: list[dict]) -> list[dict]:
             pid = int(str(raw_pid).strip())
         else:
             pid = by_name.get(str(raw_pid).strip().casefold())
+        kind = str(it.get("kind") or "").strip().lower()
+        if kind not in KINDS:
+            # A row with a real `when` is a dated one whatever it called itself;
+            # anything else falls back to a to-do, which is the safe reading of
+            # a line the model thought was worth returning.
+            kind = "date" if str(it.get("when") or "").strip().lower() in WHENS else "todo"
         when = str(it.get("when") or "").strip().lower()
         date = it.get("date")
         out.append({
             "project_id": pid if pid in ids else None,
-            "when": when if when in WHENS else "later",
+            "kind": kind,
+            # Only a dated row is placed on the calendar. A to-do or an insight
+            # with a "when" would sort in among the deadlines and read as one.
+            "when": (when if when in WHENS else "later") if kind == "date" else None,
             "text": body[:240],
             "quote": str(it.get("quote") or "").strip()[:200] or None,
-            "date": str(date)[:10] if isinstance(date, str) and date.strip() else None,
+            "date": str(date)[:10] if isinstance(date, str) and date.strip()
+                    and kind == "date" else None,
         })
+    # Most urgent first within the model's own ordering: it ranked them, and the
+    # kinds rank against each other. A stable sort keeps its order inside a kind.
+    order = {k: i for i, k in enumerate(KINDS)}
+    out.sort(key=lambda r: order[r["kind"]])
     return out
 
 
 def agenda(today: str, projects: list[dict]) -> list[dict]:
     raw = run(AGENDA_INSTRUCTION, agenda_context(today, projects))
-    return _items(raw, projects)
+    return _items(raw, projects, cap=20)
 
 
 # ------------------------------------------------------------- one page's pane
@@ -301,21 +338,34 @@ def agenda(today: str, projects: list[dict]) -> list[dict]:
 PAGE_AGENDA_INSTRUCTION = """\
 Below are dated updates for ONE {noun}, oldest first, and then today's date.
 
-Return a JSON array of what needs attention now for this {noun} alone.
+Return a JSON array of what needs attention now for this {noun} alone. Be
+thorough — this is the only pass over these updates, and it is worse to drop a
+real commitment than to return one more row.
 
-An item is something the updates put on a day — a deadline, a cutover, a
-recurring report, a meeting, a promise with a date attached — that falls today,
-is coming up, or has already passed with nothing in the updates saying it was
-done.
+Each item is one of three kinds.
+
+  "date"     something the updates put on a day — a deadline, a cutover, a
+             recurring report, a meeting, a promise with a date attached — that
+             falls today, is coming up, or has already passed with nothing
+             saying it was done.
+  "todo"     something someone said they would do, with no date attached, that
+             nothing since says is done. Name who it is on where the updates do.
+  "insight"  something you would want to know walking into a conversation about
+             this {noun}, that is neither a task nor a date: a decision taken, a
+             risk or blocker, a dependency, a number, a position someone took.
 
 Each item is an object with exactly these keys:
-  "when"   one of: "overdue", "today", "this week", "later"
+  "kind"   one of: "date", "todo", "insight"
+  "when"   for a "date": one of "overdue", "today", "this week", "later".
+           null for the other two kinds.
   "text"   one short line. Imperative if it is something to do
            ("Send the steering-group update"), plain if it is an event
-           ("Kafka migration cuts over")
+           ("Kafka migration cuts over") or an insight
+           ("Legal has not come back; it is blocking the cutover")
   "quote"  a few words copied from the update this came from
-  "date"   the date it falls on as YYYY-MM-DD, or null if the updates only say
-           something like "Thursdays" or "next week"
+  "date"   for a "date": the day it falls on as YYYY-MM-DD, or null if the
+           updates only say something like "Thursdays" or "next week". null for
+           the other two kinds.
 
 Some updates are headed "from X" — they were written elsewhere and linked
 here. They count exactly as much as the rest: a commitment made in a 1-1 is as
@@ -324,8 +374,9 @@ due as one made in a project update.
 Rules: use only what is in the updates. Do not invent dates, owners, or
 outcomes, and do not carry an item forward if a later update says it is done.
 Work out "overdue" and "today" against the date given at the end, not against
-your own idea of the date. Most urgent first. At most 10 items. If nothing in
-the updates is tied to a day, return an empty array.
+your own idea of the date. Order by how much it matters, most pressing first.
+At most 30 items. If the updates say nothing worth surfacing, return an empty
+array.
 
 Output the JSON array and nothing else: no prose, no explanation, no code
 fence."""
@@ -358,7 +409,99 @@ def page_agenda(today: str, name: str, kind: str, updates: list[dict]) -> list[d
     noun = "person" if kind == "person" else "project"
     raw = run(PAGE_AGENDA_INSTRUCTION.format(noun=noun),
               page_agenda_context(today, name, kind, updates))
-    items = _items(raw, [])
+    items = _items(raw, [], cap=30)
     for it in items:
         it.pop("project_id", None)
-    return items[:10]
+    return items
+
+
+# ------------------------------------------------------------- meeting prep
+
+PERSON_PREP_INSTRUCTION = """\
+Below are dated notes, oldest first, ahead of a 1-1 with one person.
+
+They come from three places, and each is headed with which:
+  · a plain heading is a note from a previous conversation with them
+  · "from X" is an update written on X's page and linked to this person
+  · "on X — not filed here" is an update written on another page since you last
+    spoke, which names this person. It is work that happened in between. It was
+    found by name and nobody filed it here, so treat it as a lead: say where it
+    came from, and do not assert it is about them if the words do not say so.
+
+Write what you need to know walking into this conversation. Use these sections,
+and drop any you have nothing for:
+
+**Since you last spoke** — what has happened on their work since {since}. This
+is the section this brief exists for. Take it from the linked and not-filed-here
+updates, and name the page each thing came from. If nothing has happened, say
+so in one line rather than padding it.
+**Where things stand** — 2-4 sentences on what they are working on and how it
+is going.
+**Open between you** — things either of you said you would do that nothing
+since says are done. Say which of you it is on.
+**They keep raising** — only things that come up in more than one conversation.
+Never promote a single passing mention into a pattern.
+**Worth asking** — the questions this material raises and never answers. Be
+specific enough to read out loud.
+
+Rules: use only what is in the notes. Do not invent commitments, dates, or
+feelings. If notes contradict each other, say so rather than picking one. Where
+a claim rests on one note, quote a few words of it and give its date. Be terse —
+this is read in the minutes before the call. Output markdown. No preamble."""
+
+PROJECT_PREP_INSTRUCTION = """\
+Below are dated updates, oldest first, ahead of a meeting about one project.
+
+They come from three places, and each is headed with which:
+  · a plain heading is an update on this project
+  · "from X" is an update written on X's page and linked to this project
+  · "on X — not filed here" is an update written on another page since the last
+    update here, which names this project. It was found by name and nobody
+    filed it here, so treat it as a lead: say where it came from.
+
+Write what you need to know walking into this meeting. Use these sections, and
+drop any you have nothing for:
+
+**Since last time** — what has changed since {since}. This is the section this
+brief exists for. Name the page anything linked or not-filed-here came from. If
+nothing has changed, say so in one line rather than padding it.
+**Where it stands** — 2-4 sentences on the current state.
+**Decisions needed** — what this meeting has to settle, and what is blocking
+each one.
+**Open** — commitments nothing since says are done. Name the owner where the
+updates name one.
+**Risks** — what could go wrong that the updates already point at.
+**Worth asking** — questions the updates raise and never answer.
+
+Rules: use only what is in the updates. Do not invent owners, dates, or
+outcomes. If updates contradict each other, say so rather than picking one.
+Where a claim rests on one update, quote a few words of it and give its date.
+Be terse — this is read in the minutes before the call. Output markdown. No
+preamble."""
+
+
+def prep_context(name: str, kind: str, updates: list[dict], since: str | None) -> str:
+    head = "Person" if kind == "person" else "Project"
+    lines = [f"# {head}: {name}", ""]
+    for u in updates:
+        stamp = u["created_at"][:16].replace("T", " ")
+        if u.get("topic"):
+            stamp += f" · {u['topic']}"
+        if u.get("source") == "linked":
+            stamp += f" · from {u['from_name']}"
+        elif u.get("source") == "elsewhere":
+            stamp += f" · on {u['from_name']} — not filed here"
+        lines += [f"## {stamp}", u["body"], ""]
+    lines += ["---", ""]
+    lines.append(f"# You last met on {since}" if since
+                 else "# There is no record of a previous meeting")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def prep(name: str, kind: str, updates: list[dict], since: str | None) -> str:
+    instruction = (PERSON_PREP_INSTRUCTION if kind == "person"
+                   else PROJECT_PREP_INSTRUCTION)
+    since_txt = since or "the beginning — this is the first one on record"
+    return run(instruction.format(since=since_txt),
+               prep_context(name, kind, updates, since))

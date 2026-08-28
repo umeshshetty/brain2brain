@@ -52,6 +52,7 @@ def api_project(q):
     pid = _int(q.get("id", [None])[0])
     out = store.project(pid)
     out["pane"] = store.page_agenda(pid)
+    out["prep"] = store.prep(pid)
     return out
 
 
@@ -306,6 +307,27 @@ def post_page_act(b):
     return out
 
 
+def post_prep(b):
+    """Build the brief for the next meeting about this page.
+
+    `since` is the day of the last meeting. It defaults to the day of the newest
+    update the page itself holds — a 1-1 note is the record of the 1-1 — and you
+    can override it, because sometimes you spoke and did not write it down.
+    """
+    pid = _int(b.get("project_id"), "project")
+    since = (b.get("since") or "").strip() or store.last_meeting(pid)
+    if since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", since):
+        raise ValueError("a date looks like 2026-09-04")
+    ctx = store.prep_context(pid, since)
+    if not ctx["total"]:
+        raise ValueError("nothing to read yet — add an update first")
+    with _AI_LOCK:
+        body = ai.prep(ctx["name"], ctx["kind"], ctx["updates"], since)
+    out = store.save_prep(pid, body, since, ctx["newest"], ctx["total"])
+    out["counts"] = ctx["counts"]
+    return out
+
+
 READS = {"/api/projects": api_projects,
          "/api/project": api_project,
          "/api/agenda": api_agenda}
@@ -325,6 +347,7 @@ WRITES = {
     "/api/agenda/act": post_agenda_act,
     "/api/page/refresh": post_page_agenda,
     "/api/page/act": post_page_act,
+    "/api/prep": post_prep,
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,
 }

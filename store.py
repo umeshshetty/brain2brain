@@ -1,4 +1,4 @@
-"""SQLite storage. Eight tables, and only one of them holds anything you typed.
+"""SQLite storage. Nine tables, and only one of them holds anything you typed.
 
 `updates.body` is the raw text, stored exactly as entered and never rewritten.
 Everything else — summaries, answers — is derived, cached, and safe to throw
@@ -15,6 +15,7 @@ import datetime
 import json
 import os
 import pathlib
+import re
 import sqlite3
 
 DB_PATH = pathlib.Path(os.environ.get("BRAIN_DB") or
@@ -128,6 +129,20 @@ CREATE TABLE IF NOT EXISTS agenda (
 -- each project at 40 updates and then keeps only the 12 most urgent items
 -- across all of them, so a page's own third-most-urgent deadline can fall off
 -- a cliff it never sees. This pane has one page to spend its budget on.
+-- The brief for a meeting you are about to walk into. One per page, like the
+-- pane: you prepare for the next conversation, not for a list of them.
+-- `since` is the day the last one happened, kept because the brief is written
+-- against it and a brief that no longer says which gap it covers is a brief you
+-- cannot trust.
+CREATE TABLE IF NOT EXISTS preps (
+    project_id        INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    body              TEXT NOT NULL,
+    since             TEXT,
+    through_update_id INTEGER NOT NULL,
+    read_updates      INTEGER NOT NULL,
+    created_at        TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS page_agenda (
     project_id        INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     body              TEXT NOT NULL,
@@ -910,3 +925,159 @@ def page_agenda_items(pid: int, items: list) -> dict:
     finally:
         conn.close()
     return page_agenda(pid)
+
+
+# ------------------------------------------------------------- meeting prep
+
+PREP_MAX = 120
+
+
+def last_meeting(pid: int) -> str | None:
+    """The day of the newest update the page itself holds.
+
+    A 1-1 note is the record of the 1-1, so the last one you wrote is the last
+    time you spoke. Guests are excluded on purpose: an update linked in from a
+    project is work, not a conversation, and letting it move this date would
+    make the brief skip the very thing it is meant to catch you up on.
+    """
+    conn = connect()
+    try:
+        # By date rather than by id. They agree for anything this app wrote —
+        # created_at is always now() — but the question asked here is "when did
+        # we last speak", and that is a date, so ask it of the dates.
+        r = conn.execute("SELECT created_at FROM updates WHERE project_id = ?"
+                         " ORDER BY created_at DESC, id DESC LIMIT 1",
+                         (pid,)).fetchone()
+        return r["created_at"][:10] if r else None
+    finally:
+        conn.close()
+
+
+def prep_context(pid: int, since: str | None) -> dict:
+    """Everything worth reading before the next meeting about this page.
+
+    Three sources, and the brief is told which is which:
+
+      own        this page's updates. The history.
+      linked     updates you explicitly linked here. Also history, with a
+                 mouth attached to it.
+      elsewhere  updates on OTHER pages, written since the last meeting, that
+                 name this page. This is "the work done in between", and it is
+                 the only place in the app that reaches across pages without
+                 being asked to.
+
+    That last one is a whole-word match on the page's name — the same match the
+    mention nudge uses, and no more clever than that. It is safe here in a way
+    it would not be as a filing decision: nothing is written, every line is
+    attributed to the page it came from, and if it picks up the wrong Priya you
+    will see it said so and ignore it.
+    """
+    conn = connect()
+    try:
+        p = conn.execute("SELECT id, name, kind FROM projects WHERE id = ?",
+                         (pid,)).fetchone()
+        if not p:
+            raise ValueError("no such project or person")
+
+        own = _rows(conn.execute("""
+            SELECT u.id, u.body, u.created_at, t.name AS topic
+            FROM updates u LEFT JOIN topics t ON t.id = u.topic_id
+            WHERE u.project_id = ? ORDER BY u.id DESC LIMIT ?
+        """, (pid, PREP_MAX)))
+        for r in own:
+            r["source"] = "own"
+
+        linked = _rows(conn.execute("""
+            SELECT u.id, u.body, u.created_at, NULL AS topic,
+                   h.name AS from_name, h.kind AS from_kind
+            FROM update_links l
+            JOIN updates  u ON u.id = l.update_id
+            JOIN projects h ON h.id = u.project_id
+            WHERE l.project_id = ? AND u.project_id != ?
+            ORDER BY u.id DESC LIMIT ?
+        """, (pid, pid, PREP_MAX)))
+        for r in linked:
+            r["source"] = "linked"
+
+        # Whole words only, and never the page itself. LIKE is case-insensitive
+        # for ASCII in SQLite; the boundary check is done in Python because a
+        # portable one in SQL would be a wall of replace().
+        seen = {r["id"] for r in own} | {r["id"] for r in linked}
+        elsewhere = []
+        if len(p["name"]) >= 3:
+            pat = re.compile(rf"(^|[^0-9A-Za-z]){re.escape(p['name'])}([^0-9A-Za-z]|$)",
+                             re.I)
+            rows = _rows(conn.execute("""
+                SELECT u.id, u.body, u.created_at, NULL AS topic,
+                       h.name AS from_name, h.kind AS from_kind
+                FROM updates u JOIN projects h ON h.id = u.project_id
+                WHERE u.project_id != ? AND u.body LIKE ?
+                  AND (? IS NULL OR u.created_at >= ?)
+                ORDER BY u.id DESC LIMIT ?
+            """, (pid, f"%{p['name']}%", since, since, PREP_MAX)))
+            for r in rows:
+                if r["id"] not in seen and pat.search(r["body"]):
+                    r["source"] = "elsewhere"
+                    elsewhere.append(r)
+
+        updates = sorted(own + linked + elsewhere,
+                         key=lambda r: (r["created_at"], r["id"]))
+        return {
+            "id": p["id"], "name": p["name"], "kind": p["kind"],
+            "since": since,
+            "updates": updates,
+            "newest": max((r["id"] for r in updates), default=0),
+            "total": len(updates),
+            "counts": {"own": len(own), "linked": len(linked),
+                       "elsewhere": len(elsewhere)},
+        }
+    finally:
+        conn.close()
+
+
+def prep(pid: int) -> dict:
+    """The cached brief, and whether the store has moved under it."""
+    conn = connect()
+    try:
+        r = conn.execute("SELECT body, since, through_update_id, read_updates,"
+                         " created_at FROM preps WHERE project_id = ?",
+                         (pid,)).fetchone()
+        if not r:
+            return {"built": False, "last_meeting": last_meeting(pid)}
+        # Measured over the same three sources it read, so a brief does not go
+        # stale because something unrelated was written somewhere else.
+        now_ctx = prep_context(pid, r["since"])
+        behind = sum(1 for u in now_ctx["updates"] if u["id"] > r["through_update_id"])
+        return {
+            "built": True,
+            "body": r["body"],
+            "since": r["since"],
+            "created_at": r["created_at"],
+            "behind": behind,
+            "changed": now_ctx["total"] != r["read_updates"] and not behind,
+            "stale": bool(behind or now_ctx["total"] != r["read_updates"]),
+            "read": r["read_updates"],
+            "last_meeting": last_meeting(pid),
+        }
+    finally:
+        conn.close()
+
+
+def save_prep(pid: int, body: str, since: str | None, through: int,
+              read: int) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            conn.execute("""
+                INSERT INTO preps (project_id, body, since, through_update_id,
+                                   read_updates, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    body = excluded.body, since = excluded.since,
+                    through_update_id = excluded.through_update_id,
+                    read_updates = excluded.read_updates,
+                    created_at = excluded.created_at
+            """, (pid, body, since, through, read, now()))
+    finally:
+        conn.close()
+    return prep(pid)

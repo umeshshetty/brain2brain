@@ -13,7 +13,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. eight tables
+store.py      SQLite. nine tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -99,7 +99,9 @@ guessing at a noun; ids are shared, so an item needs no new field to link.
 **Nothing is filed on a person automatically.** People are not extracted from
 your project updates: writing "Priya says it slips" on a project page puts
 nothing on Priya's page by itself. That is an entity resolver, it is what v1
-died of. Crossing the two is a button you press — see *Linking* below.
+died of. Crossing the two is a button you press — see *Linking* below — with one
+read-only exception, *Prep*, which reaches across pages by name to tell you what
+happened since you last spoke, and writes nothing.
 
 Names are unique across both kinds: two pages you cannot tell apart in the Now
 pane would be worse than the collision.
@@ -221,6 +223,24 @@ projects that were actually sent. An item matching neither still renders, but
 unlinked: a dead link is worse than no link, and guessing which project was
 meant would put words in your updates' mouth.
 
+**A pane that only kept things with a date on them threw most of it away.**
+*User request, 2026-08-28: "we need to make sure we capture as many insights and
+to do, as possible."* An item is now one of three kinds — a **date**, a **todo**
+(someone owes it, no day attached), or an **insight** (a decision, a risk, a
+number, a position someone took: not a task, but you would want it walking into
+the room). Measured on one real project: 10 items before, **30 after** — 16
+named to-dos with owners and 3 risks that were previously discarded.
+
+Kinds rank against each other, so the top of the pane is still the most urgent
+thing. An insight offers **note** and nothing else: it is not a task, and a
+*done* button on "GNC delivery is at risk" would be a lie.
+
+**Capture is exhaustive; the pane is not.** *"The imp ones to keep at the left
+pane."* Everything is kept; the first 12 are shown, with `+N more` for the rest.
+The cut is by position rather than by group, or one long Overdue list would hide
+every to-do behind it. A row from before kinds existed still renders — it falls
+back to a date if it has a real `when`, and to a to-do otherwise.
+
 Everything else in `_items()` is the same instinct. A row with no text is
 dropped, an unknown `when` falls back to `later`, the list is capped at 12, and
 prose instead of an array is an `AIError` rather than a half-rendered pane.
@@ -263,6 +283,54 @@ dropped rather than stored as a null nobody reads.
 
 Done · note · date work exactly as they do on the home pane, and write an
 update into the page you are on. Nothing sets a status here either.
+
+## Prep — before a meeting
+
+**User request, 2026-08-28.** *"when I plan to meet someone or for some project
+meeting, I must get insights on what I must know for that meeting based on
+history and work done in between last and current meeting."*
+
+A button on every project and person page. It writes the brief you read in the
+five minutes before you walk in, and its first section is the one it exists for:
+**what has happened since last time.**
+
+**The last note on a page is the record of the last meeting.** A 1-1 note *is*
+the 1-1, so the newest one you wrote is the last time you spoke, and that date
+is the default. Guests are deliberately excluded from it: an update linked in
+from a project is work, not a conversation, and letting it move the date would
+make the brief skip the very thing it is meant to catch you up on. The date is a
+field you can change, because sometimes you spoke and did not write it down.
+
+**Three sources, and the brief is told which is which.**
+
+| | |
+|---|---|
+| **own** | This page's updates. The history. |
+| **linked** | What you explicitly linked here (see *Linking*). History with a mouth attached. |
+| **elsewhere** | Updates on *other* pages, written since the last meeting, that name this page. This is "the work done in between", and it is the only place in the app that reaches across pages without being asked to. |
+
+**That last one is the one to be careful about, and it is deliberately dumb.**
+A whole-word match on the page's name — the same match the mention nudge uses
+and no cleverer. It is safe here in a way it would not be as a filing decision:
+**nothing is written**, every line is attributed to the page it came from, and
+the prompt is told these were found by name and nobody filed them, so treat
+them as leads. Verified: a real brief wrote *"Steering group asked who owns
+GoBMP comms — Priya's name came up (UxM page, 2026-08-25; not filed to her, so
+unclear whether she knows or has agreed)"*, which is exactly the right amount of
+confidence. Verified also that "Priyanka" does not match "Priya".
+
+This does not reverse *Nothing is filed on a person automatically*. Reading
+across pages to write a disposable brief and filing something on someone's page
+are different acts, and only the second one is destructive to get wrong.
+
+A 1-1 brief and a project brief ask for different sections — *Since you last
+spoke · Where things stand · Open between you · They keep raising · Worth
+asking* against *Since last time · Where it stands · Decisions needed · Open ·
+Risks · Worth asking*.
+
+**Not offered inside a topic.** A meeting is about the whole page. Cached one
+per page and stale-tracked over the same three sources it read, so unrelated
+work elsewhere does not make it claim to be out of date.
 
 ## Acting on an item
 

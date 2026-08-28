@@ -76,6 +76,12 @@
   .grp .rule { flex:1; height:1px; background:var(--line); }
   .grp.overdue .lbl, .grp.today .lbl { color:var(--warn); }
   .grp.today .lbl { color:var(--accent); }
+  /* Below the fold of urgency: still there, visibly quieter. */
+  .grp.insight .lbl { color:var(--dim); }
+  button.more { display:block; width:100%; margin-top:12px; padding:7px;
+                border:1px dashed var(--line); border-radius:8px; font-size:12.5px; }
+  .item.insight { border-left-color:var(--line); background:none; }
+  .item.insight .txt { font-weight:450; }
 
   .item { display:block; text-decoration:none; color:inherit; background:var(--card);
           border:1px solid var(--line); border-left:3px solid var(--line);
@@ -328,12 +334,19 @@ const lkChip = (p, uid) => `<span class="lk${p.kind === "person" ? " person" : "
    Derived and cached exactly like a summary: one Claude call, thrown away and
    rebuilt whenever you ask. */
 
+/* The pane's order, top to bottom. Dated things first because a day is the
+   most urgent claim an update can make; then things someone owes with no date
+   on them; then what is worth knowing but is not a task at all. An item's
+   group is its `when` if it has one, otherwise its `kind`. */
 const GROUPS = [
   ["overdue",   "Overdue"],
   ["today",     "Today"],
   ["this week", "This week"],
   ["later",     "Later"],
+  ["todo",      "To do"],
+  ["insight",   "Worth knowing"],
 ];
+const groupOf = it => it.when || it.kind || "later";
 
 const dayLabel = d => {
   if (!d) return "";
@@ -347,6 +360,11 @@ const dayLabel = d => {
 // Which item has its form open, and which form. Kept outside the render so a
 // re-render after logging does not slam it shut mid-sentence.
 let openAct = null, openKind = null;
+// How much of a pane is shown before it says "+N more". Capture is meant to be
+// exhaustive; the pane is meant to be read in the ten seconds before a call, and
+// those are not the same job. Everything is kept, the top of it is what you see.
+const PANE_VISIBLE = 12;
+let showAll = {};
 // Links chosen for an update you have not written yet. Module-level so the
 // suggestion chips can re-render the card without losing what you picked, and
 // dropped the moment you walk to a different page — a link you picked while
@@ -368,7 +386,7 @@ let pendingLinks = [], pendingFor = null;
 function paneItem(it, i, p, all, chip = true) {
     const open = i === openAct;
     return `
-    <div class="item ${it.when.replace(" ", "")}${it.done ? " done" : ""}" data-item="${i}">
+    <div class="item ${groupOf(it).replace(" ", "")}${it.done ? " done" : ""}" data-item="${i}">
       <div class="txt">${p ? `<a href="#/p/${p.id}"
         style="color:inherit;text-decoration:none">${esc(it.text)}</a>` : esc(it.text)}</div>
       <div class="src">
@@ -378,9 +396,10 @@ function paneItem(it, i, p, all, chip = true) {
         ${it.date ? `<span class="day">${esc(dayLabel(it.date))}</span>` : ""}
       </div>
       <div class="acts">
-        ${it.done ? "" : `<button data-act="done" data-i="${i}">done</button>`}
+        ${it.done || it.kind === "insight" ? "" : `<button data-act="done" data-i="${i}">done</button>`}
         <button data-act="note" data-i="${i}">note</button>
-        <button data-act="date" data-i="${i}">${it.date ? "move" : "set date"}</button>
+        ${it.kind === "insight" ? "" : `<button data-act="date" data-i="${i}"
+          >${it.date ? "move" : "set date"}</button>`}
         ${it.logged ? `<span class="did">logged ${it.logged === 1 ? ""
           : it.logged + "× "}to ${p ? esc(p.name) : "the log"}</span>` : ""}
       </div>
@@ -409,21 +428,31 @@ function paneItem(it, i, p, all, chip = true) {
 /* Overdue / Today / This week / Later, in that order, empty groups dropped.
  * Indexes are positions in the whole list, because that is how the server
  * addresses an item. */
-function paneGroups(items, item) {
-  return GROUPS.map(([key, label]) => {
-    const mine = items.filter(i => i.when === key);
+function paneGroups(items, item, which) {
+  // Items arrive already ranked, so "the top of the list" is "what matters
+  // most" — the cut is by position, not by group, or a long Overdue list would
+  // hide every to-do behind it.
+  const all = which && showAll[which];
+  const shown = all ? items : items.slice(0, PANE_VISIBLE);
+  const hidden = items.length - shown.length;
+  const groups = GROUPS.map(([key, label]) => {
+    const mine = shown.filter(i => groupOf(i) === key);
     if (!mine.length) return "";
     return `<div class="grp ${key.replace(" ", "")}">
         <span class="lbl">${label}</span><span class="rule"></span>
         <span class="lbl">${mine.length}</span></div>
       ${mine.map(i => item(i, items.indexOf(i))).join("")}`;
   }).join("");
+  return groups + (hidden > 0
+    ? `<button class="link more" data-more="${which}">+${hidden} more</button>`
+    : all && items.length > PANE_VISIBLE
+    ? `<button class="link more" data-more="${which}">show less</button>` : "");
 }
 
 function nowPane(ag, byId, all) {
   const items = ag.items || [];
   const item = (it, i) => paneItem(it, i, it.project_id ? byId[it.project_id] : null, all);
-  const groups = paneGroups(items, item);
+  const groups = paneGroups(items, item, "now");
 
   const body =
     !ag.updates ? `<div class="empty">Nothing to read yet. This pane goes
@@ -467,6 +496,7 @@ function nowPane(ag, byId, all) {
  * the page to find it says nothing. This reads the page. */
 function pagePane(pane, p, W) {
   const items = pane.items || [];
+  const which = "page";
   const item = (it, i) => paneItem(it, i, p, [], false);
 
   const body =
@@ -477,7 +507,7 @@ function pagePane(pane, p, W) {
     : !pane.built ? `<div class="empty">Not built yet. Claude will read
         ${pane.updates} ${W.unit}${pane.updates === 1 ? "" : "s"} on this page —
         ${W.guests} — and pull out what is tied to a day.</div>`
-    : items.length ? paneGroups(items, item)
+    : items.length ? paneGroups(items, item, which)
     : `<div class="empty">Nothing here is tied to a day right now.</div>`;
 
   return `
@@ -548,6 +578,8 @@ async function home(kind) {
   const rerender = () => { app.innerHTML = nowPane(ag, byId, projects) + right; wire(); };
 
   app.onclick = async e => {
+    const more = e.target.closest("[data-more]");
+    if (more) { showAll[more.dataset.more] = !showAll[more.dataset.more]; return rerender(); }
     const b = e.target.closest("[data-act]");
     if (b) {
       const i = +b.dataset.i;
@@ -645,6 +677,11 @@ async function projectPage(id, scope) {
     addBtn: "Add note", list: "Conversations", del: "delete person",
     ask: "What did I promise them? What keeps coming up?",
     readBtn: "Read these notes", guests: "anything linked here from a project included",
+    prepHead: "Before your next 1-1",
+    prepBtn: "Prepare for the next one",
+    prepBlurb: `Claude reads your notes with them, anything linked to their page,
+      and updates written elsewhere since that date that name them — then writes
+      what has happened since you last spoke and what to ask.`,
     reads: sc => sc ? `every note filed under <b>${esc(sc)}</b>`
                     : `every note from your 1-1s with <b>${esc(p.name)}</b>`,
     none: `No notes yet. After your next 1-1, drop what you talked about in the
@@ -655,11 +692,17 @@ async function projectPage(id, scope) {
     addBtn: "Add update", list: "Updates", del: "delete project",
     ask: "Why did we push the date? Who owns the migration?",
     readBtn: "Read this project", guests: "linked notes from your 1-1s included",
+    prepHead: "Before your next meeting",
+    prepBtn: "Prepare for the meeting",
+    prepBlurb: `Claude reads this project's updates, anything linked to it, and
+      updates written elsewhere since that date that name it — then writes what
+      has changed since last time, what the meeting has to settle, and what to ask.`,
     reads: sc => sc ? `every update filed under <b>${esc(sc)}</b>`
                     : "every update on this project",
     none: `No updates yet. The box at the top is the whole input to this thing.`,
   };
 
+  const pr = p.prep || { built: false };
   const href = sc => `#/p/${p.id}${sc === "" ? "" : sc === "unfiled" ? "/unfiled" : "/t/" + sc}`;
   const chip = (sc, label, n) =>
     `<a class="chip${String(sc) === String(scope) ? " on" : ""}" href="${href(sc)}"
@@ -709,6 +752,24 @@ async function projectPage(id, scope) {
       </div>
       <div class="sug" id="sug"></div>
     </div>
+
+    ${scope === "" ? `
+    <div class="sec">
+      <h2>${W.prepHead}</h2>
+      <div class="card">
+        <div class="row" style="margin-bottom:${pr.built ? "12px" : "0"}">
+          <button id="prepbtn">${pr.built ? "Rebuild" : W.prepBtn}</button>
+          <label class="dim" style="font-size:13px">since
+            <input type="date" id="prepsince" value="${esc(pr.since || pr.last_meeting || "")}"></label>
+          ${pr.built && pr.stale ? `<span class="stale">${pr.behind
+            ? `${pr.behind} new update${pr.behind === 1 ? "" : "s"} since this`
+            : "What this read has changed"}</span>` : ""}
+          ${pr.built ? `<span class="dim" style="margin-left:auto;font-size:13px"
+            >${esc(when(pr.created_at))}</span>` : ""}
+        </div>
+        <div class="md">${pr.built ? md(pr.body) : `<span class="dim">${W.prepBlurb}</span>`}</div>
+      </div>
+    </div>` : ""}
 
     ${ai ? `
     <div class="sec">
@@ -903,6 +964,15 @@ async function projectPage(id, scope) {
     $("#body").oninput = suggest;
     suggest();
 
+    // ---- prepare for the next meeting
+    if ($("#prepbtn")) $("#prepbtn").onclick = e =>
+      busy(e.target, "Reading", async () => {
+        await api("/api/prep", { project_id: p.id,
+                                 since: $("#prepsince") ? $("#prepsince").value : "" });
+        await reload();
+        toast("Prep ready");
+      });
+
     // ---- build this page's own pane
     if ($("#panebtn")) $("#panebtn").onclick = e =>
       busy(e.target, "Reading", async () => {
@@ -950,6 +1020,8 @@ async function projectPage(id, scope) {
   app.onclick = async e => {
     // ---- act on a pane item. Every action writes an update on this page, and
     // that update is the record — nothing here sets a status.
+    const more = e.target.closest("[data-more]");
+    if (more) { showAll[more.dataset.more] = !showAll[more.dataset.more]; return rerender(); }
     const act = e.target.closest("[data-act]");
     if (act) {
       const i = +act.dataset.i;
