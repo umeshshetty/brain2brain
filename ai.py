@@ -13,6 +13,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 
 # Claude Code is an agent by default, and an agent handed a pile of project
 # notes tries to be helpful with them. The first version of this asked for a
@@ -52,8 +53,22 @@ def run(instruction: str, context: str) -> str:
         cmd += ["--model", os.environ["BRAIN_MODEL"]]
     cmd.append(instruction)
     try:
-        p = subprocess.run(cmd, input=context, capture_output=True,
-                           text=True, timeout=TIMEOUT)
+        # Run it from an empty directory it has never seen before.
+        #
+        # --setting-sources "" turns off settings, but not everything the CLI
+        # picks up from the directory it is standing in. Caught in testing: a
+        # person's brief opened "Priya is working on the Allianz migration
+        # (EU-only, cutover Nov 3)" when no update in that store said the word
+        # Allianz — it had read the auto-memory kept for this repo and written
+        # it in as fact. Both halves of that are unacceptable: the briefs must
+        # say only what the updates say, and nothing the user keeps elsewhere
+        # should turn up in a brief they might paste into a meeting.
+        #
+        # A fresh directory per call rather than a fixed one, so nothing can
+        # accumulate across runs and be read back on the next.
+        with tempfile.TemporaryDirectory(prefix="brain-ai-") as blank:
+            p = subprocess.run(cmd, input=context, capture_output=True,
+                               text=True, timeout=TIMEOUT, cwd=blank)
     except FileNotFoundError:
         raise AIError("the `claude` CLI is not on PATH — install Claude Code")
     except subprocess.TimeoutExpired:
@@ -72,10 +87,21 @@ def context(project: str, updates: list[dict]) -> str:
     Oldest first so the model reads the story in the order it happened, and so
     "what changed recently" is the end of the text rather than the beginning.
     Bodies are passed through verbatim — the raw text is the whole point.
+
+    An update linked in from somewhere else is stamped with where it came from.
+    That attribution is the entire value of linking: a project brief that can
+    say "Priya said the migration would slip" is worth more than the same
+    sentence with no mouth attached to it, and a person's brief that shows what
+    they said about a project reads as one conversation rather than two.
     """
     lines = [f"# Project: {project}", ""]
     for u in updates:
-        lines.append(f"## {u['created_at'][:16].replace('T', ' ')}")
+        head = u["created_at"][:16].replace("T", " ")
+        via = u.get("via")
+        if via:
+            what = "from your 1-1s with" if via.get("kind") == "person" else "from"
+            head += f" · {what} {via['name']}"
+        lines.append(f"## {head}")
         lines.append(u["body"])
         lines.append("")
     return "\n".join(lines)
@@ -91,6 +117,9 @@ sections, and drop any section you have nothing for:
 **Open** — bullets. Name the owner where the updates name one.
 **Recently changed** — bullets, only from the most recent updates.
 **Unresolved** — questions the updates raise and never answer.
+
+Some updates are headed "from X" — they were written elsewhere and linked to
+this project. Use them, and say who they came from when you do.
 
 Rules: use only what is in the updates. Do not invent owners, dates, or
 outcomes. If updates contradict each other, say so rather than picking one.
@@ -120,6 +149,10 @@ nothing since says are done. Say which of you it is on.
 conversation. This is the section worth being right about.
 **Since last time** — bullets, only from the most recent conversation.
 **Worth asking** — questions the notes raise and never answer.
+
+Some notes are headed "from X" — they were written on a project's page and
+linked here because this person is part of that work. Use them, and name the
+project when you do.
 
 Rules: use only what is in the notes. Do not invent commitments, dates, or
 feelings, and do not turn a single passing mention into a pattern. If notes

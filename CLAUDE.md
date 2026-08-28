@@ -13,7 +13,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. six tables
+store.py      SQLite. seven tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -45,7 +45,17 @@ means a pasted update cannot steer the summariser (verified: an update reading
 
 Also passed: `--tools ""` (these prompts read text and write prose; nothing
 should reach the disk on our behalf) and `--setting-sources ""` (no hooks firing
-on every summary, no CLAUDE.md picked up from whatever directory it runs in).
+on every summary, no settings from whatever directory it runs in).
+
+**Every call runs from a fresh empty directory, and that is not tidiness.**
+`--setting-sources ""` turns off settings; it does not turn off everything the
+CLI picks up from the directory it is standing in. Caught in testing: a person's
+brief opened *"Priya is working on the Allianz migration (EU-only, cutover Nov
+3)"* when no update in that store contained the word Allianz — the subprocess
+had read the auto-memory kept for this repo and written it in as fact. Both
+halves of that are unacceptable. A brief must say only what the updates say, and
+nothing you keep elsewhere should surface in something you paste into a meeting.
+A `TemporaryDirectory` per call, so nothing accumulates across runs either.
 
 `BRAIN_MODEL` pins a model. `BRAIN_AI_TIMEOUT` is the ceiling, default 180s.
 
@@ -86,14 +96,55 @@ would make the pane quietly wrong. People are headed `# Person 5: Priya` in the
 context so the model can write *"Give Priya an answer on GoBMP"* rather than
 guessing at a noun; ids are shared, so an item needs no new field to link.
 
-**What this deliberately is not.** People are not extracted from your project
-updates, and mentioning someone in an update does not file anything on their
-page. That is an entity resolver, it is what v1 died of, and the raw text
-already says who was involved — Ask on the project will tell you. A person's
-page holds what you put there.
+**Nothing is filed on a person automatically.** People are not extracted from
+your project updates: writing "Priya says it slips" on a project page puts
+nothing on Priya's page by itself. That is an entity resolver, it is what v1
+died of. Crossing the two is a button you press — see *Linking* below.
 
 Names are unique across both kinds: two pages you cannot tell apart in the Now
 pane would be worse than the collision.
+
+## Linking
+
+**User request, 2026-08-28.** Work on a project is work with people, and a 1-1
+is half about projects. Kept apart, you write the same thing twice and the
+briefs each know half of it.
+
+**One update, linked in two places, never copied.** `update_links` holds
+`(update_id, project_id)` and nothing else. Copying the text would give you two
+things that drift, and the raw text is the one thing that cannot be regenerated.
+The update keeps one home — the page you wrote it on — and shows up on the other
+as a *guest*.
+
+| | |
+|---|---|
+| **A guest is read-only where it visits** | It shows where it came from, links back to its home page, and offers exactly one control: unlink. It cannot be re-filed or deleted from a page that is not its own, because it is not that page's text to lose. |
+| **A guest belongs to no topic** | `updates.topic_id` is the home page's filing. A topic brief therefore never sees a guest — cross-pollination happens at the project's own scope, where the whole picture belongs. |
+| **Unfiled ignores guests** | Unfiled means *you have not sorted this yet*, and a guest is not yours to sort. |
+| **Unlinking is not deleting** | It drops one row. `ON DELETE CASCADE` on both ends means deleting the update or the page it visits drops the link too — and only the link. |
+
+**Attribution is the whole point.** `ai.context()` heads a guest
+`## 2026-08-28 09:00 · from your 1-1s with Priya`, and both summary prompts are
+told to name the source when they use one. Verified in both directions: a GoBMP
+brief that says *"from a 1-1 with Priya, she 'thinks Nov 3 slips'"*, and Priya's
+brief that says *"You asked Priya to own the token rotation fix by Sep 15
+(GoBMP)"*. A sentence with a mouth attached to it is worth more than the same
+sentence without one.
+
+**Staleness needed a second dimension for this.** A summary records
+`through_update_id` — the newest update it read — which only ever notices the
+set *growing*. Linking in an update written last week grows the set without
+moving the watermark. `summaries.read_updates` records how many updates the
+brief actually read, and a count that no longer matches means it is stale even
+when the watermark says otherwise. Linking, unlinking and deleting are all
+caught by it.
+
+**The mention nudge is a substring match, not a model.** Type a name you have a
+page for and the box offers *"mentions Priya — link?"*. It runs on every
+keystroke, so it cannot be a Claude call; it matches whole words only, against
+names you created yourself; and nothing is linked until you press it, so a wrong
+guess costs one glance. This is the closest the app gets to an entity resolver,
+and the distance is deliberate.
 
 ## Topics
 
@@ -234,6 +285,10 @@ quietly serving a brief that predates the thing you actually want to know. It
 does not auto-refresh: a Claude call is ~10 seconds and costs tokens, so it
 happens when you ask.
 
+The watermark alone is not enough — it only notices the set growing. A brief
+also records how many updates it read, so deleting one, or linking one in from
+another page, stales it too (see *Linking*).
+
 ## Boundaries
 
 Bound to `127.0.0.1`. A per-launch token is required on every `/api/*` call and
@@ -249,8 +304,9 @@ second.
 
 Deleting a project or a person deletes their updates, and there is no undo —
 the page makes you type the name. Deleting a topic keeps its updates
-(see *Topics*). Deleting an update or an answer is one click, because an
-answer is regenerable and a mis-typed update is noise.
+(see *Topics*). Unlinking keeps both (see *Linking*). Deleting an update or an
+answer is one click, because an answer is regenerable and a mis-typed update is
+noise.
 
 ## History
 

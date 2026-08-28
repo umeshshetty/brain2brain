@@ -1,4 +1,4 @@
-"""SQLite storage. Six tables, and only one of them holds anything you typed.
+"""SQLite storage. Seven tables, and only one of them holds anything you typed.
 
 `updates.body` is the raw text, stored exactly as entered and never rewritten.
 Everything else — summaries, answers — is derived, cached, and safe to throw
@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS summaries (
     topic_id          INTEGER          REFERENCES topics(id)   ON DELETE CASCADE,
     body              TEXT NOT NULL,
     through_update_id INTEGER NOT NULL,
+    -- How many updates were in scope when this was written. A watermark alone
+    -- only notices the set growing at the top; linking an OLDER update into a
+    -- project, or deleting one, changes what the brief should say without
+    -- moving the newest id at all.
+    read_updates      INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL
 );
 -- NOT a PRIMARY KEY: SQLite permits NULLs in primary key columns, so
@@ -75,6 +80,19 @@ CREATE TABLE IF NOT EXISTS summaries (
 -- constraint.
 CREATE UNIQUE INDEX IF NOT EXISTS summaries_scope
     ON summaries(project_id, IFNULL(topic_id, 0));
+
+-- An update has one home — the project or person you wrote it in — and any
+-- number of links to others. A note from a 1-1 that is really about the GoBMP
+-- migration is linked to GoBMP; it is not copied there. Copying raw text would
+-- make two of the one thing that cannot be regenerated, and they would drift.
+-- Deleting either end removes the link and nothing else.
+CREATE TABLE IF NOT EXISTS update_links (
+    update_id  INTEGER NOT NULL REFERENCES updates(id)   ON DELETE CASCADE,
+    project_id INTEGER NOT NULL REFERENCES projects(id)  ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (update_id, project_id)
+);
+CREATE INDEX IF NOT EXISTS links_by_project ON update_links(project_id);
 
 -- Questions are kept because the answer to "why did we pick Postgres" is worth
 -- as much the second time, and re-asking costs another Claude call.
@@ -179,6 +197,10 @@ def _migrate(conn) -> list[str]:
         conn.execute("ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL"
                      " DEFAULT 'project'")
         done.append("projects.kind")
+    if _has(conn, "summaries") and "read_updates" not in _cols(conn, "summaries"):
+        conn.execute("ALTER TABLE summaries ADD COLUMN read_updates INTEGER NOT NULL"
+                     " DEFAULT 0")
+        done.append("summaries.read_updates")
     if _has(conn, "agenda") and "read_updates" not in _cols(conn, "agenda"):
         conn.execute("ALTER TABLE agenda ADD COLUMN read_updates INTEGER NOT NULL DEFAULT 0")
         done.append("agenda.read_updates")
@@ -323,34 +345,77 @@ def project(pid: int) -> dict:
             WHERE t.project_id = ?
             GROUP BY t.id ORDER BY t.name COLLATE NOCASE
         """, (pid,)))
-        out["updates"] = _rows(conn.execute(
+        own = _rows(conn.execute(
             "SELECT id, topic_id, body, created_at FROM updates"
             " WHERE project_id = ? ORDER BY id DESC", (pid,)))
+        for u in own:
+            u["via"] = None
+            u["links"] = []
+        by_id = {u["id"]: u for u in own}
+        for r in conn.execute("""
+                SELECT l.update_id, p.id, p.name, p.kind
+                FROM update_links l JOIN projects p ON p.id = l.project_id
+                WHERE l.update_id IN (SELECT id FROM updates WHERE project_id = ?)
+                ORDER BY p.name COLLATE NOCASE
+        """, (pid,)):
+            by_id[r["update_id"]]["links"].append(
+                {"id": r["id"], "name": r["name"], "kind": r["kind"]})
+
+        # Updates that live somewhere else and were linked here. Guests: they
+        # carry where they came from, and their topic belongs to their home, so
+        # they are not filed under anything on this page.
+        guests = _rows(conn.execute("""
+            SELECT u.id, NULL AS topic_id, u.body, u.created_at,
+                   h.id AS via_id, h.name AS via_name, h.kind AS via_kind
+            FROM update_links l
+            JOIN updates  u ON u.id = l.update_id
+            JOIN projects h ON h.id = u.project_id
+            WHERE l.project_id = ? AND u.project_id != ?
+            ORDER BY u.id DESC
+        """, (pid, pid)))
+        for g in guests:
+            g["via"] = {"id": g.pop("via_id"), "name": g.pop("via_name"),
+                        "kind": g.pop("via_kind")}
+            g["links"] = []
+        out["updates"] = sorted(own + guests, key=lambda u: u["id"], reverse=True)
         out["answers"] = _rows(conn.execute(
             "SELECT id, topic_id, question, answer, created_at FROM answers"
             " WHERE project_id = ? ORDER BY id DESC LIMIT 40", (pid,)))
-        out["unfiled"] = sum(1 for u in out["updates"] if u["topic_id"] is None)
+        # Unfiled means "written here and not yet filed". A guest is not
+        # unfiled — filing it is its home's business, not this page's.
+        out["unfiled"] = sum(1 for u in out["updates"]
+                             if u["topic_id"] is None and not u["via"])
 
         # A scope's summary is stale against the newest update IN THAT SCOPE.
         # Filing something under Rollout must not mark the Vendor brief stale.
         newest = {"": 0}
+        count = {"": 0}
         for t in out["topics"]:
             newest[str(t["id"])] = 0
+            count[str(t["id"])] = 0
         for u in out["updates"]:
             newest[""] = max(newest[""], u["id"])
+            count[""] += 1
             k = str(u["topic_id"])
-            if k in newest:
+            # A guest has no topic here, so it counts towards the whole project
+            # and towards no topic — which is exactly where it is read from.
+            if k in newest and not u["via"]:
                 newest[k] = max(newest[k], u["id"])
+                count[k] += 1
         summaries = {}
         for s in conn.execute(
-                "SELECT topic_id, body, through_update_id, created_at"
+                "SELECT topic_id, body, through_update_id, read_updates, created_at"
                 " FROM summaries WHERE project_id = ?", (pid,)):
             k = "" if s["topic_id"] is None else str(s["topic_id"])
             d = dict(s)
             d["behind"] = sum(1 for u in out["updates"]
                               if u["id"] > s["through_update_id"]
-                              and (k == "" or str(u["topic_id"]) == k))
-            d["stale"] = newest.get(k, 0) > s["through_update_id"]
+                              and (k == "" or (str(u["topic_id"]) == k and not u["via"])))
+            # Two ways to be out of date, as the agenda has three: something
+            # newer, or the set itself no longer matching. Linking an older
+            # update in is the second, and a watermark cannot see it.
+            d["stale"] = (newest.get(k, 0) > s["through_update_id"]
+                          or count.get(k, 0) != s["read_updates"])
             summaries[k] = d
         out["summaries"] = summaries
         return out
@@ -438,7 +503,7 @@ def delete_topic(tid: int) -> dict:
 
 # ------------------------------------------------------------------- updates
 
-def add_update(pid: int, body: str, topic_id=None) -> dict:
+def add_update(pid: int, body: str, topic_id=None, links=None) -> dict:
     body = body.strip()
     if not body:
         raise ValueError("nothing to add")
@@ -448,10 +513,14 @@ def add_update(pid: int, body: str, topic_id=None) -> dict:
             raise ValueError("no such project")
         tid = _own_topic(conn, pid, topic_id)
         ts = now()
+        # One transaction: an update that saved without the links you chose
+        # would look filed correctly and quietly not be.
         with conn:
             cur = conn.execute(
                 "INSERT INTO updates (project_id, topic_id, body, created_at)"
                 " VALUES (?,?,?,?)", (pid, tid, body, ts))
+            for other in (links or []):
+                _link(conn, cur.lastrowid, int(other))
         return {"id": cur.lastrowid, "topic_id": tid, "body": body, "created_at": ts}
     finally:
         conn.close()
@@ -487,7 +556,48 @@ def delete_update(uid: int) -> dict:
 
 # ------------------------------------------------------- derived, cached, cheap
 
-def save_summary(pid: int, body: str, through: int, topic_id=None) -> dict:
+def _link(conn, uid: int, pid: int) -> None:
+    home = conn.execute("SELECT project_id FROM updates WHERE id = ?", (uid,)).fetchone()
+    if not home:
+        raise ValueError("no such update")
+    if home["project_id"] == pid:
+        # Not an error worth shouting about, but not a link either: an update
+        # is already in its own home, and a row saying otherwise would render
+        # the thing twice on its own page.
+        return
+    if not conn.execute("SELECT 1 FROM projects WHERE id = ?", (pid,)).fetchone():
+        raise ValueError("no such project or person")
+    conn.execute("INSERT OR IGNORE INTO update_links (update_id, project_id,"
+                 " created_at) VALUES (?, ?, ?)", (uid, pid, now()))
+
+
+def link_update(uid: int, pid: int) -> dict:
+    """Put an existing update in front of another project or person too.
+
+    The text is not touched and not copied — this is one row saying the update
+    is relevant in two places. Unlinking removes only that row.
+    """
+    conn = connect()
+    try:
+        with conn:
+            _link(conn, uid, pid)
+        return {"id": uid, "project_id": pid, "linked": True}
+    finally:
+        conn.close()
+
+
+def unlink_update(uid: int, pid: int) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            conn.execute("DELETE FROM update_links WHERE update_id = ?"
+                         " AND project_id = ?", (uid, pid))
+        return {"id": uid, "project_id": pid, "linked": False}
+    finally:
+        conn.close()
+
+
+def save_summary(pid: int, body: str, through: int, topic_id=None, read=0) -> dict:
     ts = now()
     conn = connect()
     try:
@@ -496,12 +606,14 @@ def save_summary(pid: int, body: str, through: int, topic_id=None) -> dict:
             # see summaries_scope for why the constraint is written that way.
             conn.execute(
                 "INSERT INTO summaries (project_id, topic_id, body, through_update_id,"
-                " created_at) VALUES (?,?,?,?,?)"
+                " read_updates, created_at) VALUES (?,?,?,?,?,?)"
                 " ON CONFLICT(project_id, IFNULL(topic_id, 0)) DO UPDATE SET"
                 " body=excluded.body, through_update_id=excluded.through_update_id,"
-                " created_at=excluded.created_at", (pid, topic_id, body, through, ts))
+                " read_updates=excluded.read_updates,"
+                " created_at=excluded.created_at",
+                (pid, topic_id, body, through, read, ts))
         return {"topic_id": topic_id, "body": body, "through_update_id": through,
-                "created_at": ts, "stale": False, "behind": 0}
+                "read_updates": read, "created_at": ts, "stale": False, "behind": 0}
     finally:
         conn.close()
 

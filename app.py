@@ -77,8 +77,20 @@ def post_delete_topic(b):
 
 
 def post_update(b):
+    links = b.get("links") or []
+    if not isinstance(links, list) or len(links) > 20:
+        raise ValueError("bad links")
     return store.add_update(_int(b.get("project_id"), "project"),
-                            b.get("body") or "", b.get("topic_id"))
+                            b.get("body") or "", b.get("topic_id"),
+                            [_int(x, "link") for x in links])
+
+
+def post_link(b):
+    """Link or unlink one update to one other project or person."""
+    uid = _int(b.get("id"), "update")
+    pid = _int(b.get("project_id"), "project")
+    return (store.link_update(uid, pid) if b.get("on")
+            else store.unlink_update(uid, pid))
 
 
 def post_move_update(b):
@@ -113,7 +125,10 @@ def _scope(b):
         if not topic:
             raise ValueError("no such topic")
         label = f"{p['name']} — {topic['name']}"
-        updates = [u for u in updates if u["topic_id"] == tid]
+        # A guest has no topic here, so a topic brief never sees one. Cross-
+        # pollination happens at the project's own scope, where the whole
+        # picture belongs.
+        updates = [u for u in updates if u["topic_id"] == tid and not u["via"]]
     return p, tid, label, list(reversed(updates)), kind
 
 
@@ -128,7 +143,8 @@ def post_summarize(b):
         raise ValueError("nothing to summarise here yet — add an update first")
     with _AI_LOCK:
         body = ai.summarize(label, updates, kind)
-    return store.save_summary(p["id"], body, updates[-1]["id"], tid)
+    return store.save_summary(p["id"], body, max(u["id"] for u in updates),
+                              tid, len(updates))
 
 
 def post_ask(b):
@@ -239,6 +255,7 @@ WRITES = {
     "/api/topic/delete": post_delete_topic,
     "/api/update": post_update,
     "/api/update/move": post_move_update,
+    "/api/update/link": post_link,
     "/api/update/delete": post_delete_update,
     "/api/answer/delete": post_delete_answer,
     "/api/agenda/refresh": post_agenda,
