@@ -530,8 +530,126 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": repr(e)})
 
 
+# ---- capture, from a terminal ----------------------------------------------
+# Straight to SQLite through `store`, not through the server over HTTP. The
+# per-launch token lives in the running process's memory and a shell cannot
+# know it; a write needs no token anyway. So this works whether or not the
+# server is up, and it opens nothing new to anybody.
+
+INBOX = "Inbox"
+
+
+def _page(name):
+    """A page by name, case-insensitively; then as a substring, if that is
+    unambiguous. A name that matches nothing is an error rather than a quiet
+    fallback to the Inbox — a typo that swallows the note is worse than one
+    that stops you, because you will look for it on the page you meant."""
+    ps = store.projects()
+    n = " ".join(name.split()).lower()
+    for p in ps:
+        if p["name"].lower() == n:
+            return p
+    near = [p for p in ps if n in p["name"].lower()]
+    if len(near) == 1:
+        return near[0]
+    if near:
+        raise SystemExit("  which one? " + ", ".join(p["name"] for p in near))
+    raise SystemExit(f"  no page called {name!r}   ·   see: python3 app.py ls")
+
+
+def _inbox():
+    """The page for a note with no page yet. Made on demand and said out loud,
+    because a page appearing without being asked for is worth one line."""
+    for p in store.projects():
+        if p["name"].lower() == INBOX.lower():
+            return p["id"], False
+    return store.create_project(INBOX)["id"], True
+
+
+def _topic(pid, name):
+    n = " ".join(name.split()).lower()
+    ts = store.project(pid)["topics"]
+    for t in ts:
+        if t["name"].lower() == n:
+            return t["id"]
+    have = ", ".join(t["name"] for t in ts) or "none yet"
+    # Not created on the fly: filing is a decision, and a mistyped topic would
+    # be a folder you never open sitting next to the one you meant.
+    raise SystemExit(f"  no topic called {name!r} there   ·   has: {have}")
+
+
+def cli_add(argv):
+    """python3 app.py add [-p PAGE] [-t TOPIC] [--on DATE] [TEXT | -]"""
+    ap = argparse.ArgumentParser(prog="app.py add",
+                                 description="Write an update from anywhere.")
+    ap.add_argument("-p", "--page", help="project or person; the Inbox if omitted")
+    ap.add_argument("-t", "--topic", help="file it under a topic of that page")
+    ap.add_argument("--on", help="the day it happened, if not today (2026-09-04)")
+    ap.add_argument("text", nargs="*", help="the update; read from stdin if absent")
+    a = ap.parse_args(argv)
+
+    body = " ".join(a.text).strip()
+    if not body or body == "-":
+        # `pbpaste | app.py add -p GoBMP`, and the shell's own multi-line input.
+        body = "" if sys.stdin.isatty() and body != "-" else sys.stdin.read()
+    body = body.strip()
+    if not body:
+        raise SystemExit("  nothing to add")
+
+    store.init()
+    made = False
+    if a.page:
+        page = _page(a.page)
+        pid, name, kind = page["id"], page["name"], page["kind"]
+    else:
+        pid, made = _inbox()
+        name, kind = INBOX, "project"
+    tid = _topic(pid, a.topic) if a.topic else None
+    try:
+        u = store.add_update(pid, body, topic_id=tid, on=a.on)
+    except ValueError as e:
+        raise SystemExit(f"  {e}")
+
+    if made:
+        print(f"  made a page called {INBOX} to hold it")
+    where = f"{name}" + (f" · {a.topic}" if tid else "")
+    day = u["created_at"][:10]
+    print(f"  → {where}{'' if kind == 'project' else '  (person)'}"
+          f"   {day}{'' if day == store.now()[:10] else '  (dated)'}")
+    if not a.page:
+        print("  file it later: open the page and use `move to…`")
+
+
+def cli_ls(argv):
+    """python3 app.py ls [WORD] — the pages, most recently written first."""
+    ap = argparse.ArgumentParser(prog="app.py ls", description="List pages.")
+    ap.add_argument("word", nargs="?", help="only pages whose name contains this")
+    a = ap.parse_args(argv)
+    store.init()
+    ps = store.projects()
+    if a.word:
+        ps = [p for p in ps if a.word.lower() in p["name"].lower()]
+    if not ps:
+        print("  nothing yet")
+        return
+    w = max(len(p["name"]) for p in ps)
+    for p in ps:
+        last = (p["last_update_at"] or "")[:10] or "—"
+        print(f"  {p['name']:<{w}}  {p['kind']:<7}  {p['updates']:>4} updates"
+              f"   last {last}")
+
+
+CLI = {"add": cli_add, "ls": cli_ls}
+
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
+    # A subcommand before the server's own flags, so `app.py` bare still
+    # starts the server and there is no fifth file to keep in step.
+    if sys.argv[1:2] and sys.argv[1] in CLI:
+        return CLI[sys.argv[1]](sys.argv[2:])
+
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 epilog="also: app.py add …   ·   app.py ls")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-open", action="store_true")
     args = ap.parse_args()

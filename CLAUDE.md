@@ -4,7 +4,8 @@ A page per project and per person. You drop raw updates in; Claude Code
 reads them back to you.
 
 ```
-python3 app.py          # → http://127.0.0.1:8765/
+python3 app.py                       # → http://127.0.0.1:8765/
+python3 app.py add "…"               # capture without the tab
 ```
 
 ## What it is
@@ -266,6 +267,41 @@ One consequence worth naming: a page's pane takes the 120 most recent updates
 window. Its watermark is therefore the newest id in scope rather than the
 newest id read — a pane whose watermark could never reach the store's would
 report itself behind forever.
+
+## Adding from anywhere
+
+**User request, 2026-08-28.** The tab is the only way in, and the tab is not
+always open. Capture is supposed to be the cheap half; walking to a browser to
+type one line is not cheap.
+
+```
+python3 app.py add "Cutover confirmed for Nov 3"
+python3 app.py add -p GoBMP -t Rollout --on 2026-08-26 "Anita signed off"
+pbpaste | python3 app.py add -p Priya
+python3 app.py ls
+```
+
+**It writes to SQLite through `store`, not to the server over HTTP.** The
+per-launch token lives in the running process's memory and a shell cannot know
+it — and a write needs no token in the first place. Going direct means it works
+whether or not the server is running, and opens nothing new to anybody. WAL and
+a 10s busy timeout make a write during a live session safe; verified against a
+running server.
+
+**A subcommand of `app.py`, not a fifth file.** `sys.argv[1]` is checked
+against the two commands before the server's own flags are parsed, so bare
+`python3 app.py` still starts the server and there is nothing new to keep in
+step.
+
+| | |
+|---|---|
+| **No `-p` lands in an Inbox** | Made on demand, said out loud when it is made, and the line after tells you to file it later with *move to…*. Capture with no decision attached is the point; a note you cannot file is not. |
+| **A name that matches nothing is an error** | Never a quiet fallback to the Inbox. A typo that swallows the note is worse than one that stops you, because you go looking on the page you meant. Exact name first, then an unambiguous substring; several matches list themselves and write nothing. |
+| **An unknown topic stops too** | And prints the topics that page does have. Filing is a decision, and a mistyped topic is a folder you never open sitting next to the one you meant. |
+| **Text or stdin** | Words after the command, or a pipe when there are none — `pbpaste`, a heredoc, another program's output. Newlines survive; the body is stored as typed, like every other update. |
+
+`--on` is the same `stamp()` the composer uses, with the same refusal of
+tomorrow (see *The day it happened*).
 
 ## Linking
 
