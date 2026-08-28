@@ -294,3 +294,71 @@ def _items(raw: str, projects: list[dict]) -> list[dict]:
 def agenda(today: str, projects: list[dict]) -> list[dict]:
     raw = run(AGENDA_INSTRUCTION, agenda_context(today, projects))
     return _items(raw, projects)
+
+
+# ------------------------------------------------------------- one page's pane
+
+PAGE_AGENDA_INSTRUCTION = """\
+Below are dated updates for ONE {noun}, oldest first, and then today's date.
+
+Return a JSON array of what needs attention now for this {noun} alone.
+
+An item is something the updates put on a day — a deadline, a cutover, a
+recurring report, a meeting, a promise with a date attached — that falls today,
+is coming up, or has already passed with nothing in the updates saying it was
+done.
+
+Each item is an object with exactly these keys:
+  "when"   one of: "overdue", "today", "this week", "later"
+  "text"   one short line. Imperative if it is something to do
+           ("Send the steering-group update"), plain if it is an event
+           ("Kafka migration cuts over")
+  "quote"  a few words copied from the update this came from
+  "date"   the date it falls on as YYYY-MM-DD, or null if the updates only say
+           something like "Thursdays" or "next week"
+
+Some updates are headed "from X" — they were written elsewhere and linked
+here. They count exactly as much as the rest: a commitment made in a 1-1 is as
+due as one made in a project update.
+
+Rules: use only what is in the updates. Do not invent dates, owners, or
+outcomes, and do not carry an item forward if a later update says it is done.
+Work out "overdue" and "today" against the date given at the end, not against
+your own idea of the date. Most urgent first. At most 10 items. If nothing in
+the updates is tied to a day, return an empty array.
+
+Output the JSON array and nothing else: no prose, no explanation, no code
+fence."""
+
+
+def page_agenda_context(today: str, name: str, kind: str,
+                        updates: list[dict]) -> str:
+    """One page's updates, stamped and attributed. No ids in the headings:
+    everything here belongs to the page you are looking at, and an item has
+    nowhere else it could be logged."""
+    head = "Person" if kind == "person" else "Project"
+    lines = [f"# {head}: {name}", ""]
+    for u in updates:
+        stamp = u["created_at"][:16].replace("T", " ")
+        if u.get("topic"):
+            stamp += f" · {u['topic']}"
+        via = u.get("via")
+        if via:
+            what = "from your 1-1s with" if via.get("kind") == "person" else "from"
+            stamp += f" · {what} {via['name']}"
+        lines += [f"## {stamp}", u["body"], ""]
+    lines += ["---", "", f"# Today is {today}", ""]
+    return "\n".join(lines)
+
+
+def page_agenda(today: str, name: str, kind: str, updates: list[dict]) -> list[dict]:
+    """Items for one page. Reuses the cross-project parser, which drops anything
+    malformed; `project_id` is absent by design and comes back None, because the
+    page you are on is the only place one of these could belong."""
+    noun = "person" if kind == "person" else "project"
+    raw = run(PAGE_AGENDA_INSTRUCTION.format(noun=noun),
+              page_agenda_context(today, name, kind, updates))
+    items = _items(raw, [])
+    for it in items:
+        it.pop("project_id", None)
+    return items[:10]

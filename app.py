@@ -49,7 +49,10 @@ def api_projects(q):
 
 
 def api_project(q):
-    return store.project(_int(q.get("id", [None])[0]))
+    pid = _int(q.get("id", [None])[0])
+    out = store.project(pid)
+    out["pane"] = store.page_agenda(pid)
+    return out
 
 
 def post_project(b):
@@ -243,6 +246,66 @@ def post_agenda_act(b):
     return out
 
 
+def post_page_agenda(b):
+    """Rebuild one page's pane: one Claude call over that page's updates.
+
+    Separate from the cross-project pane rather than a filter over it. That one
+    caps each project at 40 updates and then keeps the 12 most urgent items
+    across the whole store, so a page's own deadlines can be crowded out by a
+    noisier page entirely — which is exactly what you notice when you open a
+    page and it tells you nothing.
+    """
+    ctx = store.page_agenda_context(_int(b.get("project_id"), "project"))
+    if not ctx["updates"]:
+        raise ValueError("nothing to read here yet — add an update first")
+    day = store.today()
+    with _AI_LOCK:
+        items = ai.page_agenda(day, ctx["name"], ctx["kind"], ctx["updates"])
+    return store.save_page_agenda(ctx["id"], items, ctx["newest"], day, ctx["total"])
+
+
+def post_page_act(b):
+    """Act on one item in a page's pane. Identical in spirit to the cross-
+    project one: done, a note and a new date all write an update, and that
+    update is the whole record.
+
+    The target needs no picking here. Every item in this pane came out of this
+    page's updates, so this page is where what you did belongs.
+    """
+    pid = _int(b.get("project_id"), "project")
+    pane = store.page_agenda(pid)
+    if not pane.get("built"):
+        raise ValueError("nothing to act on yet")
+    if b.get("built") != pane["created_at"]:
+        raise ValueError("this pane was rebuilt — reload and try again")
+
+    items = pane["items"]
+    i = _int(b.get("index"), "item")
+    if not 0 <= i < len(items):
+        raise ValueError("no such item")
+    item = items[i]
+
+    action = (b.get("action") or "").strip()
+    if action not in ("done", "note", "date"):
+        raise ValueError("bad action")
+    note = (b.get("note") or "").strip()[:4000]
+    date = (b.get("date") or "").strip()
+    if action == "date" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise ValueError("a date looks like 2026-09-04")
+    if action == "note" and not note:
+        raise ValueError("write something")
+
+    up = store.add_update(pid, _logged(action, item, note, date))
+    if action == "done":
+        item["done"] = True
+    elif action == "date":
+        item["date"] = date
+    item["logged"] = int(item.get("logged") or 0) + 1
+    out = store.page_agenda_items(pid, items)
+    out["logged_to"] = {"id": pid, "update_id": up["id"]}
+    return out
+
+
 READS = {"/api/projects": api_projects,
          "/api/project": api_project,
          "/api/agenda": api_agenda}
@@ -260,6 +323,8 @@ WRITES = {
     "/api/answer/delete": post_delete_answer,
     "/api/agenda/refresh": post_agenda,
     "/api/agenda/act": post_agenda_act,
+    "/api/page/refresh": post_page_agenda,
+    "/api/page/act": post_page_act,
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,
 }

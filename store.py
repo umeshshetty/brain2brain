@@ -1,4 +1,4 @@
-"""SQLite storage. Seven tables, and only one of them holds anything you typed.
+"""SQLite storage. Eight tables, and only one of them holds anything you typed.
 
 `updates.body` is the raw text, stored exactly as entered and never rewritten.
 Everything else — summaries, answers — is derived, cached, and safe to throw
@@ -119,6 +119,21 @@ CREATE TABLE IF NOT EXISTS agenda (
     for_date          TEXT NOT NULL,
     through_update_id INTEGER NOT NULL,
     read_updates      INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL
+);
+
+-- The same thing for one page. `agenda` is one row because reading every
+-- project at once is the point of it; this one is keyed by page because
+-- reading one page deeply is the point of this. The cross-project pane caps
+-- each project at 40 updates and then keeps only the 12 most urgent items
+-- across all of them, so a page's own third-most-urgent deadline can fall off
+-- a cliff it never sees. This pane has one page to spend its budget on.
+CREATE TABLE IF NOT EXISTS page_agenda (
+    project_id        INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    body              TEXT NOT NULL,
+    for_date          TEXT NOT NULL,
+    through_update_id INTEGER NOT NULL,
+    read_updates      INTEGER NOT NULL,
     created_at        TEXT NOT NULL
 );
 """
@@ -766,3 +781,132 @@ def agenda_items(items: list) -> dict:
     finally:
         conn.close()
     return agenda()
+
+
+# --------------------------------------------------------------- page pane
+
+# A page reads its own updates deeply rather than broadly: the cross-project
+# pane spends its budget across every project, this one has a single page to
+# spend it on. Still a cap, and still printed in the pane when it bites.
+PAGE_AGENDA_MAX = 120
+
+
+def _page_scope(conn, pid: int):
+    """The ids in a page's pane scope: its own updates and its guests.
+
+    A guest is in scope because that is the entire point of linking. A
+    commitment Priya made in a 1-1, linked to GoBMP, is a GoBMP deadline; a
+    pane that could not see it would make linking decorative.
+    """
+    return [r[0] for r in conn.execute("""
+        SELECT id FROM updates WHERE project_id = ?
+        UNION
+        SELECT update_id FROM update_links WHERE project_id = ?
+    """, (pid, pid))]
+
+
+def page_agenda_context(pid: int) -> dict:
+    """One page's updates, oldest last, guests stamped with where they came from."""
+    conn = connect()
+    try:
+        p = conn.execute("SELECT id, name, kind FROM projects WHERE id = ?",
+                         (pid,)).fetchone()
+        if not p:
+            raise ValueError("no such project or person")
+        rows = _rows(conn.execute("""
+            SELECT u.id, u.body, u.created_at, t.name AS topic,
+                   h.id AS via_id, h.name AS via_name, h.kind AS via_kind
+            FROM updates u
+            LEFT JOIN topics   t ON t.id = u.topic_id
+            JOIN      projects h ON h.id = u.project_id
+            WHERE u.id IN (
+                SELECT id FROM updates WHERE project_id = :p
+                UNION SELECT update_id FROM update_links WHERE project_id = :p)
+            ORDER BY u.id DESC LIMIT :n
+        """, {"p": pid, "n": PAGE_AGENDA_MAX}))
+        for r in rows:
+            home = r.pop("via_id"), r.pop("via_name"), r.pop("via_kind")
+            r["via"] = None if home[0] == pid else {
+                "id": home[0], "name": home[1], "kind": home[2]}
+        total = len(_page_scope(conn, pid))
+        return {
+            "id": p["id"], "name": p["name"], "kind": p["kind"],
+            "updates": list(reversed(rows)),
+            "newest": max((r["id"] for r in rows), default=0),
+            "total": total,
+            "dropped": max(0, total - PAGE_AGENDA_MAX),
+        }
+    finally:
+        conn.close()
+
+
+def page_agenda(pid: int) -> dict:
+    """The cached pane for one page, with all three kinds of staleness worked out.
+
+    The same three axes as the cross-project pane, measured over this page's
+    scope rather than the whole store: a new update on a project you are not
+    looking at must not make this one say it is behind.
+    """
+    conn = connect()
+    try:
+        ids = _page_scope(conn, pid)
+        total = len(ids)
+        dropped = max(0, total - PAGE_AGENDA_MAX)
+        r = conn.execute("SELECT body, for_date, through_update_id, read_updates,"
+                         " created_at FROM page_agenda WHERE project_id = ?",
+                         (pid,)).fetchone()
+        if not r:
+            return {"built": False, "items": [], "updates": total,
+                    "dropped": dropped, "cap": PAGE_AGENDA_MAX}
+        behind = sum(1 for i in ids if i > r["through_update_id"])
+        changed = total != r["read_updates"] and not behind
+        return {
+            "built": True,
+            "items": json.loads(r["body"]),
+            "for_date": r["for_date"],
+            "created_at": r["created_at"],
+            "through_update_id": r["through_update_id"],
+            "behind": behind,
+            "outdated": r["for_date"] != today(),
+            "changed": changed,
+            "stale": bool(behind or r["for_date"] != today() or changed),
+            "updates": total,
+            "dropped": dropped,
+            "cap": PAGE_AGENDA_MAX,
+        }
+    finally:
+        conn.close()
+
+
+def save_page_agenda(pid: int, items: list, through: int, for_date: str,
+                     read: int) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            conn.execute("""
+                INSERT INTO page_agenda (project_id, body, for_date,
+                                         through_update_id, read_updates, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    body = excluded.body, for_date = excluded.for_date,
+                    through_update_id = excluded.through_update_id,
+                    read_updates = excluded.read_updates,
+                    created_at = excluded.created_at
+            """, (pid, json.dumps(items), for_date, through, read, now()))
+    finally:
+        conn.close()
+    return page_agenda(pid)
+
+
+def page_agenda_items(pid: int, items: list) -> dict:
+    """Rewrite one page's cached items and nothing else — see `agenda_items`."""
+    conn = connect()
+    try:
+        with conn:
+            n = conn.execute("UPDATE page_agenda SET body = ? WHERE project_id = ?",
+                             (json.dumps(items), pid)).rowcount
+        if not n:
+            raise ValueError("no pane to act on")
+    finally:
+        conn.close()
+    return page_agenda(pid)

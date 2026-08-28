@@ -354,20 +354,25 @@ let openAct = null, openKind = null;
 // type somewhere else.
 let pendingLinks = [], pendingFor = null;
 
-function nowPane(ag, byId, all) {
-  const items = ag.items || [];
-  // Acting on an item writes an update into the project it belongs to, and
-  // that update is the whole record — there is no status anywhere. The item
-  // stops appearing when the next agenda reads a log that says it is done.
-  const item = (it, i) => {
-    const p = it.project_id ? byId[it.project_id] : null;
+/* One row of either pane.
+ *
+ * Acting on an item writes an update into the project it belongs to, and that
+ * update is the whole record — there is no status anywhere. The item stops
+ * appearing when the next pane reads a log that says it is done.
+ *
+ * `p` is the page the item will be logged to, or null when Claude could not
+ * tie it to one — only the cross-project pane can produce that, and it makes
+ * you choose rather than guessing. `chip` is false on a page's own pane: every
+ * item there belongs to the page you are looking at, and stamping each row
+ * with the name at the top of the screen is noise. */
+function paneItem(it, i, p, all, chip = true) {
     const open = i === openAct;
     return `
     <div class="item ${it.when.replace(" ", "")}${it.done ? " done" : ""}" data-item="${i}">
       <div class="txt">${p ? `<a href="#/p/${p.id}"
         style="color:inherit;text-decoration:none">${esc(it.text)}</a>` : esc(it.text)}</div>
       <div class="src">
-        ${p ? `<span class="proj${p.kind === "person" ? " person" : ""}"
+        ${!chip ? "" : p ? `<span class="proj${p.kind === "person" ? " person" : ""}"
           >${esc(p.name)}</span>` : `<span class="proj">unplaced</span>`}
         ${it.quote ? `<span class="q">“${esc(it.quote)}”</span>` : ""}
         ${it.date ? `<span class="day">${esc(dayLabel(it.date))}</span>` : ""}
@@ -399,9 +404,13 @@ function nowPane(ag, byId, all) {
         </div>
       </div>` : ""}
     </div>`;
-  };
+}
 
-  const groups = GROUPS.map(([key, label]) => {
+/* Overdue / Today / This week / Later, in that order, empty groups dropped.
+ * Indexes are positions in the whole list, because that is how the server
+ * addresses an item. */
+function paneGroups(items, item) {
+  return GROUPS.map(([key, label]) => {
     const mine = items.filter(i => i.when === key);
     if (!mine.length) return "";
     return `<div class="grp ${key.replace(" ", "")}">
@@ -409,6 +418,12 @@ function nowPane(ag, byId, all) {
         <span class="lbl">${mine.length}</span></div>
       ${mine.map(i => item(i, items.indexOf(i))).join("")}`;
   }).join("");
+}
+
+function nowPane(ag, byId, all) {
+  const items = ag.items || [];
+  const item = (it, i) => paneItem(it, i, it.project_id ? byId[it.project_id] : null, all);
+  const groups = paneGroups(items, item);
 
   const body =
     !ag.updates ? `<div class="empty">Nothing to read yet. This pane goes
@@ -440,6 +455,47 @@ function nowPane(ag, byId, all) {
         ${ag.dropped ? `<br>Only the ${ag.per_project} most recent updates per
           project were read; ${ag.dropped} older one${ag.dropped === 1 ? "" : "s"}
           were not.` : ""}</div>` : ""}
+    </aside>`;
+}
+
+/* One page's own pane.
+ *
+ * The same machinery as Now, over one page's updates instead of every page's.
+ * It is not a filter over the cross-project pane: that one reads 40 updates a
+ * project and then keeps the 12 most urgent items across the whole store, so a
+ * quiet page's real deadline loses to a noisy page's routine one and you open
+ * the page to find it says nothing. This reads the page. */
+function pagePane(pane, p, W) {
+  const items = pane.items || [];
+  const item = (it, i) => paneItem(it, i, p, [], false);
+
+  const body =
+    !pane.updates ? `<div class="empty">Nothing to read yet. Drop
+        ${W.unit === "note" ? "a note" : "an update"} in and press
+        <b>${W.readBtn}</b> — dates in what you write
+        (“cutover Nov 3”, “I said I would come back to her Friday”) turn up here.</div>`
+    : !pane.built ? `<div class="empty">Not built yet. Claude will read
+        ${pane.updates} ${W.unit}${pane.updates === 1 ? "" : "s"} on this page —
+        ${W.guests} — and pull out what is tied to a day.</div>`
+    : items.length ? paneGroups(items, item)
+    : `<div class="empty">Nothing here is tied to a day right now.</div>`;
+
+  return `
+    <aside class="now">
+      <div class="head">
+        <h1>Dates</h1>
+        <span class="sp"></span>
+        <button class="link" id="panebtn">${pane.built ? "refresh" : W.readBtn}</button>
+      </div>
+      ${pane.stale ? `<div class="stale" style="display:block;margin-bottom:12px">
+        ${pane.behind ? `${pane.behind} new ${W.unit}${pane.behind === 1 ? "" : "s"} since this`
+          : pane.outdated ? `Built for ${esc(pane.for_date)} — the day has turned over`
+          : `What this read has changed`}</div>` : ""}
+      ${body}
+      ${pane.built ? `<div class="foot">Read ${pane.updates}
+        ${W.unit}${pane.updates === 1 ? "" : "s"} · built ${esc(when(pane.created_at))}
+        ${pane.dropped ? `<br>Only the ${pane.cap} most recent were read;
+          ${pane.dropped} older one${pane.dropped === 1 ? "" : "s"} were not.` : ""}</div>` : ""}
     </aside>`;
 }
 
@@ -553,7 +609,7 @@ async function projectPage(id, scope) {
   const [p, { projects: all }] = await Promise.all([
     api(`/api/project?id=${encodeURIComponent(id)}`), api("/api/projects"),
   ]);
-  if (pendingFor !== +id) { pendingLinks = []; pendingFor = +id; }
+  if (pendingFor !== +id) { pendingLinks = []; pendingFor = +id; openAct = openKind = null; }
   const others = all.filter(x => x.id !== +id);
   const othersById = Object.fromEntries(others.map(o => [o.id, o]));
   // A link you picked before the page reloaded, minus anything deleted since.
@@ -588,6 +644,7 @@ async function projectPage(id, scope) {
     box: "What did you talk about? Paste your 1-1 notes, or just the one line you want to remember.",
     addBtn: "Add note", list: "Conversations", del: "delete person",
     ask: "What did I promise them? What keeps coming up?",
+    readBtn: "Read these notes", guests: "anything linked here from a project included",
     reads: sc => sc ? `every note filed under <b>${esc(sc)}</b>`
                     : `every note from your 1-1s with <b>${esc(p.name)}</b>`,
     none: `No notes yet. After your next 1-1, drop what you talked about in the
@@ -597,6 +654,7 @@ async function projectPage(id, scope) {
     box: "What happened? Paste notes, type a line, anything — it is stored exactly as you write it.",
     addBtn: "Add update", list: "Updates", del: "delete project",
     ask: "Why did we push the date? Who owns the migration?",
+    readBtn: "Read this project", guests: "linked notes from your 1-1s included",
     reads: sc => sc ? `every update filed under <b>${esc(sc)}</b>`
                     : "every update on this project",
     none: `No updates yet. The box at the top is the whole input to this thing.`,
@@ -610,7 +668,7 @@ async function projectPage(id, scope) {
   const topicOptions = sel => `<option value="">Unfiled</option>` + topics.map(t =>
     `<option value="${t.id}"${String(t.id) === String(sel) ? " selected" : ""}>${esc(t.name)}</option>`).join("");
 
-  app.innerHTML = `
+  const right = `<div>
     <div class="head">
       <a href="${W.home}" class="dim" style="text-decoration:none">${W.back}</a>
       <span class="sp"></span>
@@ -724,9 +782,18 @@ async function projectPage(id, scope) {
                or re-file one from <a href="${href("")}">All</a>.`
             : unfiledView ? `Everything is filed.`
             : W.none}</div>`}
-    </div>`;
+    </div></div>`;
+
+  // The pane on the left, the page on the right — the same shape as home,
+  // because it is the same question asked of one page instead of all of them.
+  const shell = () => pagePane(p.pane || { items: [], updates: 0 }, p, W) + right;
+  app.className = "wrap two";
+  app.innerHTML = shell();
 
   const reload = () => route();
+  // Opening an item's form rewrites the shell, so everything bound by id has
+  // to be bound again — a dead Add button is worse than a slow one.
+  const rerender = () => { app.innerHTML = shell(); wire(); };
 
   // ---- add an update, into the topic you are looking at
   const post = async () => {
@@ -743,97 +810,110 @@ async function projectPage(id, scope) {
       await reload();
     });
   };
-  $("#addupd").onclick = post;
-  $("#body").onkeydown = e => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); post(); }
-  };
+  function wire() {
+    $("#addupd").onclick = post;
+    $("#body").onkeydown = e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); post(); }
+    };
 
-  // ---- topics
-  $("#addtopic").onclick = async () => {
-    const name = prompt(`New topic in "${p.name}"`);
-    if (!name || !name.trim()) return;
-    try {
-      const t = await api("/api/topic/new", { project_id: p.id, name });
-      location.hash = href(t.id);          // land on it, ready to file
-      toast(`Topic "${t.name}" added`);
-    } catch (e) { toast(e.message, true); }
-  };
-  if ($("#rentopic")) $("#rentopic").onclick = async () => {
-    const name = prompt("Rename topic", byId[tid].name);
-    if (!name || name.trim() === byId[tid].name) return;
-    try { await api("/api/topic/rename", { id: tid, name }); await reload(); }
-    catch (e) { toast(e.message, true); }
-  };
-  if ($("#deltopic")) $("#deltopic").onclick = async () => {
-    const n = byId[tid].updates;
-    // Worth saying plainly: this is the one delete in the app that keeps what
-    // it is deleting from. Nobody should hesitate over it.
-    if (!confirm(`Delete the topic "${byId[tid].name}"?\n\n` +
-        (n ? `Its ${n} ${W.unit}${n === 1 ? "" : "s"} are kept — they move to Unfiled.\n` : "") +
-        `Only the topic and its cached summary go.`)) return;
-    try {
-      const r = await api("/api/topic/delete", { id: tid });
-      location.hash = href("");
-      toast(r.unfiled ? `Deleted · ${r.unfiled} ${W.unit}${r.unfiled === 1 ? "" : "s"} moved to Unfiled`
-                      : "Topic deleted");
-    } catch (e) { toast(e.message, true); }
-  };
+    // ---- topics
+    $("#addtopic").onclick = async () => {
+      const name = prompt(`New topic in "${p.name}"`);
+      if (!name || !name.trim()) return;
+      try {
+        const t = await api("/api/topic/new", { project_id: p.id, name });
+        location.hash = href(t.id);          // land on it, ready to file
+        toast(`Topic "${t.name}" added`);
+      } catch (e) { toast(e.message, true); }
+    };
+    if ($("#rentopic")) $("#rentopic").onclick = async () => {
+      const name = prompt("Rename topic", byId[tid].name);
+      if (!name || name.trim() === byId[tid].name) return;
+      try { await api("/api/topic/rename", { id: tid, name }); await reload(); }
+      catch (e) { toast(e.message, true); }
+    };
+    if ($("#deltopic")) $("#deltopic").onclick = async () => {
+      const n = byId[tid].updates;
+      // Worth saying plainly: this is the one delete in the app that keeps what
+      // it is deleting from. Nobody should hesitate over it.
+      if (!confirm(`Delete the topic "${byId[tid].name}"?\n\n` +
+          (n ? `Its ${n} ${W.unit}${n === 1 ? "" : "s"} are kept — they move to Unfiled.\n` : "") +
+          `Only the topic and its cached summary go.`)) return;
+      try {
+        const r = await api("/api/topic/delete", { id: tid });
+        location.hash = href("");
+        toast(r.unfiled ? `Deleted · ${r.unfiled} ${W.unit}${r.unfiled === 1 ? "" : "s"} moved to Unfiled`
+                        : "Topic deleted");
+      } catch (e) { toast(e.message, true); }
+    };
 
-  // ---- claude, scoped
-  if ($("#sumbtn")) $("#sumbtn").onclick = e => busy(e.target, "Reading updates", async () => {
-    await api("/api/summarize", { project_id: p.id, topic_id: tid });
-    await reload();
-    toast("Summary updated");
-  });
-  const ask = async () => {
-    const question = $("#q").value.trim();
-    if (!question) return $("#q").focus();
-    await busy($("#askbtn"), "Thinking", async () => {
-      await api("/api/ask", { project_id: p.id, topic_id: tid, question });
-      $("#q").value = "";
+    // ---- claude, scoped
+    if ($("#sumbtn")) $("#sumbtn").onclick = e => busy(e.target, "Reading updates", async () => {
+      await api("/api/summarize", { project_id: p.id, topic_id: tid });
       await reload();
+      toast("Summary updated");
     });
-  };
-  if ($("#askbtn")) {
-    $("#askbtn").onclick = ask;
-    $("#q").onkeydown = e => { if (e.key === "Enter") ask(); };
+    const ask = async () => {
+      const question = $("#q").value.trim();
+      if (!question) return $("#q").focus();
+      await busy($("#askbtn"), "Thinking", async () => {
+        await api("/api/ask", { project_id: p.id, topic_id: tid, question });
+        $("#q").value = "";
+        await reload();
+      });
+    };
+    if ($("#askbtn")) {
+      $("#askbtn").onclick = ask;
+      $("#q").onkeydown = e => { if (e.key === "Enter") ask(); };
+    }
+
+    // ---- project rename / delete
+    $("#rename").onclick = async () => {
+      const name = prompt(person ? "Rename person" : "Rename project", p.name);
+      if (!name || name.trim() === p.name) return;
+      try { await api("/api/project/rename", { id: p.id, name }); await reload(); }
+      catch (e) { toast(e.message, true); }
+    };
+    $("#delproj").onclick = async () => {
+      // The updates go with it and there is no undo, so the name has to be typed.
+      const typed = prompt(
+        `Delete "${p.name}" and all ${p.updates.length} of ${person ? "your notes" : "its updates"}?\n` +
+        `This cannot be undone. Type the ${person ? "person's" : "project"} name to confirm.`);
+      if (typed !== p.name) return typed !== null && toast("Name did not match — nothing deleted", true);
+      try {
+        await api("/api/project/delete", { id: p.id });
+        location.hash = "#/";
+        toast("Deleted");
+      } catch (e) { toast(e.message, true); }
+    };
+
+    // ---- suggest links for text you have not saved yet
+    //
+    // A plain substring match against names you created, offered as a button.
+    // No Claude call: this fires on every keystroke, and a suggestion you have
+    // to wait ten seconds for is not a suggestion. Nothing is linked until you
+    // press it, so a false match costs one glance.
+    const suggest = () => {
+      const hit = mentions($("#body").value, others, p.id, pending.map(x => x.id));
+      $("#sug").innerHTML = hit.length
+        ? `<span>mentions</span>` + hit.map(o =>
+            `<button class="link" data-pend="${o.id}">${esc(o.name)} — link?</button>`).join("")
+        : "";
+    };
+    $("#body").oninput = suggest;
+    suggest();
+
+    // ---- build this page's own pane
+    if ($("#panebtn")) $("#panebtn").onclick = e =>
+      busy(e.target, "Reading", async () => {
+        openAct = openKind = null;
+        await api("/api/page/refresh", { project_id: p.id });
+        await reload();
+        toast("Dates updated");
+      });
+    if ($("#actnote")) $("#actnote").focus();
   }
-
-  // ---- project rename / delete
-  $("#rename").onclick = async () => {
-    const name = prompt(person ? "Rename person" : "Rename project", p.name);
-    if (!name || name.trim() === p.name) return;
-    try { await api("/api/project/rename", { id: p.id, name }); await reload(); }
-    catch (e) { toast(e.message, true); }
-  };
-  $("#delproj").onclick = async () => {
-    // The updates go with it and there is no undo, so the name has to be typed.
-    const typed = prompt(
-      `Delete "${p.name}" and all ${p.updates.length} of ${person ? "your notes" : "its updates"}?\n` +
-      `This cannot be undone. Type the ${person ? "person's" : "project"} name to confirm.`);
-    if (typed !== p.name) return typed !== null && toast("Name did not match — nothing deleted", true);
-    try {
-      await api("/api/project/delete", { id: p.id });
-      location.hash = "#/";
-      toast("Deleted");
-    } catch (e) { toast(e.message, true); }
-  };
-
-  // ---- suggest links for text you have not saved yet
-  //
-  // A plain substring match against names you created, offered as a button.
-  // No Claude call: this fires on every keystroke, and a suggestion you have
-  // to wait ten seconds for is not a suggestion. Nothing is linked until you
-  // press it, so a false match costs one glance.
-  const suggest = () => {
-    const hit = mentions($("#body").value, others, p.id, pending.map(x => x.id));
-    $("#sug").innerHTML = hit.length
-      ? `<span>mentions</span>` + hit.map(o =>
-          `<button class="link" data-pend="${o.id}">${esc(o.name)} — link?</button>`).join("")
-      : "";
-  };
-  $("#body").oninput = suggest;
-  suggest();
+  wire();
 
   // ---- re-file an update, or link one somewhere else
   app.onchange = async e => {
@@ -868,6 +948,30 @@ async function projectPage(id, scope) {
   };
 
   app.onclick = async e => {
+    // ---- act on a pane item. Every action writes an update on this page, and
+    // that update is the record — nothing here sets a status.
+    const act = e.target.closest("[data-act]");
+    if (act) {
+      const i = +act.dataset.i;
+      const same = openAct === i && openKind === act.dataset.act;
+      openAct = same ? null : i;
+      openKind = same ? null : act.dataset.act;
+      return rerender();
+    }
+    if (e.target.id === "actcancel") { openAct = openKind = null; return rerender(); }
+    if (e.target.id === "actgo") {
+      const i = openAct, kind = openKind;
+      const note = $("#actnote") ? $("#actnote").value.trim() : "";
+      const date = $("#actdate") ? $("#actdate").value : "";
+      return busy(e.target, "Logging", async () => {
+        await api("/api/page/act", { project_id: p.id, built: p.pane.created_at,
+                                     index: i, action: kind, note, date });
+        openAct = openKind = null;
+        await reload();
+        toast(`Logged to ${p.name}`);
+      });
+    }
+
     const u = e.target.closest("[data-delupd]");
     const a = e.target.closest("[data-delans]");
     const un = e.target.closest("[data-unlink]");

@@ -13,7 +13,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. seven tables
+store.py      SQLite. eight tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -230,9 +230,39 @@ than overall so one noisy project cannot crowd out the quiet one holding the
 deadline. What that leaves out is printed in the pane — a cap you cannot see
 reads as *"there was nothing else"*, which is the one thing it must not do.
 
-**The pane is on the home view only.** Inside a project you are working on that
-project, and a cross-project list there is one more thing to read past. That is
-a judgement call, and one line of CSS to reverse.
+**The cross-project pane is on the home view only.** Inside a project you want
+that project's dates, not everyone's — which is a second pane, below.
+
+## Dates — the pane on a page
+
+**User request, 2026-08-28.** *"some key notes, updates, deadlines, info for a
+project or people should also appear when I click on them."*
+
+The same machinery as Now, over one page instead of every page. Every project
+and person page is now two columns, with **Dates** on the left.
+
+**It is not a filter over the cross-project pane, and that is the whole reason
+it exists.** Now reads 40 updates per project and then keeps the 12 most urgent
+items *across the entire store*, so a quiet page's real deadline loses to a busy
+page's routine one and never appears anywhere. Measured on the live store: 18
+people, and nothing on any of their pages was reachable from the home pane.
+Asked to read one page, the same prompt found **10 items in NPI's 4 updates** —
+owners, dates, and the ones already overdue.
+
+| | |
+|---|---|
+| **Guests count** | The pane reads the page's own updates *and* everything linked to it. A commitment made in a 1-1 and linked to a project is a project deadline; a pane that could not see it would make linking decorative. |
+| **Scoped staleness** | The same three axes — behind, outdated, changed — measured over this page's scope. An update on a project you are not looking at must not make this one claim it is behind. |
+| **No project chip** | Every item belongs to the page you are on, so no row is stamped with the name at the top of the screen, and nothing is ever *unplaced*. Acting needs no picker for the same reason. |
+| **`page_agenda` is keyed by page** | `agenda` is one row because reading everything at once is the point of it. This one has a row per page for the same reason in reverse. `ON DELETE CASCADE`, so deleting a page takes its pane. |
+| **A bigger budget, still printed** | 120 updates rather than 40 — one page to spend it on. What the cap leaves out is printed in the pane, like the other one. |
+
+The items carry no `project_id`: there is only one page it could belong to.
+`ai._items()` is reused as-is and the field comes back `None`, which is then
+dropped rather than stored as a null nobody reads.
+
+Done · note · date work exactly as they do on the home pane, and write an
+update into the page you are on. Nothing sets a status here either.
 
 ## Acting on an item
 
