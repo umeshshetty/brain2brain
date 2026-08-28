@@ -1,0 +1,6 @@
+brain.db
+brain.db-shm
+brain.db-wal
+*.bak
+.venv/
+__pycache__/
