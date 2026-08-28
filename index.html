@@ -64,7 +64,10 @@
               text-transform:uppercase; color:var(--dim); font-weight:600; }
   .about .abody { margin-top:8px; font-size:14px; line-height:1.55; }
   .about .dim { margin-top:6px; display:block; font-size:13px; line-height:1.5; }
-  .about textarea { margin-top:9px; }
+  .about textarea { margin-top:7px; }
+  /* An instruction, not context — set apart so the difference is visible. */
+  .about .wants { margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
+  .about .wants .abody { color:var(--dim); }
 
   /* Two panes on the home view only: what needs attention on the left,
      projects on the right. A project page goes back to one column — you are
@@ -651,33 +654,52 @@ async function home(kind) {
 /* ---------------------------------------------------------- project ----- */
 /* Scope is in the URL, so a topic is a link you can keep: #/p/3, #/p/3/t/7,
    #/p/3/unfiled. "" is the whole project. */
-// Who this page is to you. The only field besides an update's body that you
-// write and nothing regenerates — so it renders as typed, line for line, and
-// the model that can draft one stops at the textarea.
+// The two things you write about a page rather than into its log. Both are
+// yours and nothing regenerates either, so they render as typed, line for
+// line, and the model that can draft one stops at the textarea.
+//
+// They are shown together and saved together, but they are not the same kind
+// of thing: `about` is context and can only change what a brief selects, while
+// `wants` is an instruction to the writer. The card says which is which,
+// because that difference is the whole reason one of them is safe to fill in
+// from your notes and the other is not.
 function aboutCard(p, W) {
-  const has = (p.about || "").trim();
+  const has = (p.about || "").trim(), wants = (p.guidance || "").trim();
+  const body = t => `<div class="abody">${esc(t).replace(/\n/g, "<br>")}</div>`;
+
   if (!editAbout) return `
-    <div class="about${has ? "" : " empty"}">
+    <div class="about${has || wants ? "" : " empty"}">
       <div class="row" style="align-items:baseline">
         <h3>${W.aboutHead}</h3>
         <button class="link" id="aboutedit" style="margin-left:auto"
-          >${has ? "edit" : "add"}</button>
+          >${has || wants ? "edit" : "add"}</button>
       </div>
-      ${has ? `<div class="abody">${esc(has).replace(/\n/g, "<br>")}</div>`
-            : `<div class="dim">${W.aboutBlurb}</div>`}
+      ${has ? body(has) : `<div class="dim">${W.aboutBlurb}</div>`}
+      ${wants ? `<div class="wants"><h3>${W.wantsHead}</h3>${body(wants)}</div>` : ""}
     </div>`;
+
   return `
     <div class="about open">
-      <div class="row" style="align-items:baseline">
-        <h3>${W.aboutHead}</h3>
-      </div>
-      <textarea id="abouttext" rows="5"
+      <div class="row" style="align-items:baseline"><h3>${W.aboutHead}</h3></div>
+      <div class="dim" style="font-size:12.5px">Context. It changes what a brief
+        picks out of your notes, never what those notes say.</div>
+      <textarea id="abouttext" rows="4"
         placeholder="${esc(W.aboutHint)}">${esc(aboutDraft ?? p.about ?? "")}</textarea>
-      <div class="row" style="margin-top:8px">
+
+      <div class="wants">
+        <h3>${W.wantsHead}</h3>
+        <div class="dim" style="font-size:12.5px">An instruction to Claude. It
+          decides shape, emphasis and what always gets called out — it cannot
+          make a brief say anything your updates do not.</div>
+        <textarea id="wantstext" rows="3"
+          placeholder="${esc(W.wantsHint)}">${esc(p.guidance ?? "")}</textarea>
+      </div>
+
+      <div class="row" style="margin-top:10px">
         <button class="go" id="aboutsave">Save</button>
         <button class="link" id="aboutcancel">cancel</button>
         ${p.updates.length ? `<button class="link" id="aboutdraft"
-          >draft it from my notes</button>` : ""}
+          >draft the top one from my notes</button>` : ""}
         <span class="dim" style="margin-left:auto;font-size:13px"
           >saving rebuilds the briefs below</span>
       </div>
@@ -732,6 +754,9 @@ async function projectPage(id, scope) {
       which this is, and every brief below is written for it.`,
     aboutHint: `How you two are related, what you work on together, how often you
       speak, what they care about. A few lines. Yours — Claude never edits it.`,
+    wantsHead: "What you want in a brief about them",
+    wantsHint: `e.g. always call out anything I owe them · lead with what they are
+      blocked on · keep it to five bullets · never bury a date`,
     prepHead: "Before your next 1-1",
     prepBtn: "Prepare for the next one",
     prepBlurb: `Claude reads your notes with them, anything linked to their page,
@@ -753,6 +778,9 @@ async function projectPage(id, scope) {
       in particular.`,
     aboutHint: `What it is, what you own on it, who else is involved, what you are
       watching for. A few lines. Yours — Claude never edits it.`,
+    wantsHead: "What you want in a brief about it",
+    wantsHint: `e.g. always flag anything touching compliance · lead with dates ·
+      name an owner for every open item · keep it to five bullets`,
     prepHead: "Before your next meeting",
     prepBtn: "Prepare for the meeting",
     prepBlurb: `Claude reads this project's updates, anything linked to it, and
@@ -1045,15 +1073,19 @@ async function projectPage(id, scope) {
         toast("Draft — edit it, then Save");
       });
     if ($("#aboutsave")) $("#aboutsave").onclick = e => {
-      const text = $("#abouttext").value;
+      // Read both boxes before the await: reload() replaces the DOM.
+      const about = $("#abouttext").value, guidance = $("#wantstext").value;
       busy(e.target, "Saving", async () => {
-        await api("/api/about", { project_id: p.id, about: text });
+        const r = await api("/api/about", { project_id: p.id, about, guidance });
         editAbout = false; aboutDraft = null;
         await reload();
         // The briefs are gone rather than flagged: they were written for
-        // whoever this page used to be, and that is not visible on the page.
-        toast(text.trim() ? "Saved · briefs cleared, rebuild when you want them"
-                          : "Cleared");
+        // whoever this page used to be, or to a different brief, and neither
+        // is visible on the page.
+        toast(!r.cleared.length ? "No change"
+              : (about.trim() || guidance.trim())
+                ? "Saved · briefs cleared, rebuild when you want them"
+                : "Cleared");
       });
     };
 

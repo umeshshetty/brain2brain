@@ -1,8 +1,9 @@
-"""SQLite storage. Nine tables, and two columns hold anything you typed.
+"""SQLite storage. Nine tables, and three columns hold anything you typed.
 
 `updates.body` is the raw text, stored exactly as entered and never rewritten.
-`projects.about` — who a page is to you — is the other, and every brief for
-that page is written against it. Neither is ever written by a model.
+`projects.about` says who a page is to you and every brief for it is written
+against that; `projects.guidance` says what you want out of such a brief. No
+model ever writes any of the three.
 Everything else — summaries, answers, panes, preps — is derived, cached, and
 safe to throw away: `DELETE FROM summaries` costs one Claude call to rebuild.
 
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS projects (
     name        TEXT NOT NULL UNIQUE,
     kind        TEXT NOT NULL DEFAULT 'project',
     about       TEXT,
+    guidance    TEXT,
     created_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS topics (
@@ -237,6 +239,9 @@ def _migrate(conn) -> list[str]:
     if _has(conn, "projects") and "about" not in _cols(conn, "projects"):
         conn.execute("ALTER TABLE projects ADD COLUMN about TEXT")
         done.append("projects.about")
+    if _has(conn, "projects") and "guidance" not in _cols(conn, "projects"):
+        conn.execute("ALTER TABLE projects ADD COLUMN guidance TEXT")
+        done.append("projects.guidance")
     if _has(conn, "summaries") and "read_updates" not in _cols(conn, "summaries"):
         conn.execute("ALTER TABLE summaries ADD COLUMN read_updates INTEGER NOT NULL"
                      " DEFAULT 0")
@@ -348,35 +353,67 @@ def rename_project(pid: int, name: str) -> dict:
 
 
 ABOUT_MAX = 2000
+GUIDANCE_MAX = 1000
 
 
-def set_about(pid: int, about: str) -> dict:
-    """Who this page is to you. Yours to write, and nothing else may write it.
+def set_page_setup(pid: int, about=None, guidance=None) -> dict:
+    """The two things you write about a page rather than into its log.
 
-    Every brief for this page is composed against it — a 1-1 brief for your
-    manager and one for your report are different documents read out of the
-    same notes — so the caches built before it are briefs for the wrong reader.
-    They are dropped rather than flagged. A summary is one Claude call to get
-    back; a brief that curates for a relationship you no longer have is wrong
-    in a way you cannot see on the page. Answers stay: they answered the
-    question asked, and they quote the raw text rather than interpreting it.
+    `about` is context — who this page is to you. It rides on stdin with the
+    updates and changes what a brief selects.
 
-    Raw text, stored as typed, never rewritten — the same rule updates.body
-    has, for the same reason. Clearing it is a real loss and the UI says so.
+    `guidance` is instruction — what you want out of a brief for this page. It
+    rides in argv with the prompt, below the rules, because it is addressed to
+    the writer rather than describing the subject. That is a real difference in
+    power and the UI says which is which.
+
+    Both are yours: stored as typed, never rewritten, never written by a model.
+
+    Either may be left as None to mean "leave it alone". What actually changed
+    decides which caches go, because the two reach different things — guidance
+    never touches the pane, so editing it must not cost you the pane.
     """
-    about = about.strip()[:ABOUT_MAX]
     conn = connect()
     try:
         with conn:
-            n = conn.execute("UPDATE projects SET about = ? WHERE id = ?",
-                             (about or None, pid)).rowcount
-            if not n:
+            cur = conn.execute("SELECT about, guidance FROM projects WHERE id = ?",
+                               (pid,)).fetchone()
+            if not cur:
                 raise ValueError("no such project or person")
-            for t in ("summaries", "preps", "page_agenda"):
+            new = {"about": cur["about"], "guidance": cur["guidance"]}
+            if about is not None:
+                new["about"] = about.strip()[:ABOUT_MAX] or None
+            if guidance is not None:
+                new["guidance"] = guidance.strip()[:GUIDANCE_MAX] or None
+
+            moved = {k for k in new if new[k] != cur[k]}
+            if not moved:
+                return {"id": pid, **new, "cleared": []}
+            conn.execute("UPDATE projects SET about = ?, guidance = ? WHERE id = ?",
+                         (new["about"], new["guidance"], pid))
+
+            # A brief written before either changed was written for a different
+            # reader, or to a different brief. Dropped rather than flagged:
+            # unlike the other three kinds of staleness this one is invisible
+            # on the page — a brief for the wrong reader reads perfectly well.
+            gone = ["summaries", "preps"]
+            if "about" in moved:
+                gone.append("page_agenda")   # guidance never reaches the pane
+            for t in gone:
                 conn.execute(f"DELETE FROM {t} WHERE project_id = ?", (pid,))
-        return {"id": pid, "about": about or None}
+        # Answers stay. An answer quotes the raw text rather than interpreting
+        # it, and it answered the question that was actually asked.
+        return {"id": pid, **new, "cleared": gone}
     finally:
         conn.close()
+
+
+def set_about(pid: int, about: str) -> dict:
+    return set_page_setup(pid, about=about)
+
+
+def set_guidance(pid: int, guidance: str) -> dict:
+    return set_page_setup(pid, guidance=guidance)
 
 
 def delete_project(pid: int) -> dict:
@@ -403,8 +440,8 @@ def project(pid: int) -> dict:
     """
     conn = connect()
     try:
-        p = conn.execute("SELECT id, name, kind, about, created_at FROM projects"
-                         " WHERE id = ?", (pid,)).fetchone()
+        p = conn.execute("SELECT id, name, kind, about, guidance, created_at"
+                         " FROM projects WHERE id = ?", (pid,)).fetchone()
         if not p:
             raise ValueError("no such project")
         out = dict(p)
@@ -1017,8 +1054,8 @@ def prep_context(pid: int, since: str | None) -> dict:
     """
     conn = connect()
     try:
-        p = conn.execute("SELECT id, name, kind, about FROM projects WHERE id = ?",
-                         (pid,)).fetchone()
+        p = conn.execute("SELECT id, name, kind, about, guidance FROM projects"
+                         " WHERE id = ?", (pid,)).fetchone()
         if not p:
             raise ValueError("no such project or person")
 
@@ -1067,7 +1104,7 @@ def prep_context(pid: int, since: str | None) -> dict:
                          key=lambda r: (r["created_at"], r["id"]))
         return {
             "id": p["id"], "name": p["name"], "kind": p["kind"],
-            "about": p["about"],
+            "about": p["about"], "guidance": p["guidance"],
             "since": since,
             "updates": updates,
             "newest": max((r["id"] for r in updates), default=0),

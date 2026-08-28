@@ -146,7 +146,8 @@ def post_summarize(b):
     if not updates:
         raise ValueError("nothing to summarise here yet — add an update first")
     with _AI_LOCK:
-        body = ai.summarize(label, updates, kind, p.get("about"))
+        body = ai.summarize(label, updates, kind, p.get("about"),
+                            p.get("guidance"))
     return store.save_summary(p["id"], body, max(u["id"] for u in updates),
                               tid, len(updates))
 
@@ -309,14 +310,25 @@ def post_page_act(b):
 
 
 def post_about(b):
-    """Save who this page is to you. The only write that drops derived state."""
+    """Save what you wrote about this page. The only write that drops caches.
+
+    Either field may be absent, which means leave it alone — the store works
+    out what actually changed and drops only what that reaches.
+    """
     pid = _int(b.get("project_id"), "project")
-    about = b.get("about")
-    if not isinstance(about, str):
-        raise ValueError("about must be text")
-    if len(about) > store.ABOUT_MAX:
-        raise ValueError(f"keep it under {store.ABOUT_MAX} characters")
-    return store.set_about(pid, about)
+    vals = {}
+    for key, cap in (("about", store.ABOUT_MAX), ("guidance", store.GUIDANCE_MAX)):
+        if key not in b:
+            continue
+        v = b[key]
+        if not isinstance(v, str):
+            raise ValueError(f"{key} must be text")
+        if len(v) > cap:
+            raise ValueError(f"keep that under {cap} characters")
+        vals[key] = v
+    if not vals:
+        raise ValueError("nothing to save")
+    return store.set_page_setup(pid, **vals)
 
 
 def post_about_draft(b):
@@ -348,7 +360,7 @@ def post_prep(b):
         raise ValueError("nothing to read yet — add an update first")
     with _AI_LOCK:
         body = ai.prep(ctx["name"], ctx["kind"], ctx["updates"], since,
-                       ctx["about"])
+                       ctx["about"], ctx["guidance"])
     out = store.save_prep(pid, body, since, ctx["newest"], ctx["total"])
     out["counts"] = ctx["counts"]
     return out

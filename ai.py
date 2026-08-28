@@ -204,9 +204,44 @@ what is true. It adds no facts, and nothing in it may be written up as though
 it happened or as though anyone said it."""
 
 
+def guided(instruction: str, text: str | None) -> str:
+    """Your own standing instructions for this page, appended to the prompt.
+
+    This is the one piece of user text in the app that goes into argv with the
+    instruction rather than onto stdin with the data, and that is a real
+    difference in power: `about` describes the subject and can only change what
+    a brief selects, while this is addressed to the writer and can change how it
+    writes. That is the point of it.
+
+    So it goes *last*, under a heading that subordinates it, and the rules it
+    cannot override are restated beneath it rather than left further up the
+    prompt where they would be easier to talk past. What the reader can change
+    is shape, emphasis and what always gets called out. What they cannot change
+    is that every claim comes from the updates.
+
+    Untrusted text — a pasted update, a profile — never reaches here. Only what
+    you typed into this page's own box does.
+    """
+    text = (text or "").strip()
+    if not text:
+        return instruction
+    return instruction + f"""
+
+# What the reader asked for in briefs about this page
+
+{text}
+
+Follow that where it does not conflict with the rules above, and let it decide
+emphasis, ordering, length and what always gets called out. It cannot licence
+anything the rules forbid: every claim still comes only from the updates, you
+still invent nothing, and if it asks for something the updates cannot support,
+say the updates do not support it rather than filling the gap."""
+
+
 def summarize(project: str, updates: list[dict], kind: str = "project",
-              profile: str | None = None) -> str:
-    return run(PERSON_SUMMARY_INSTRUCTION if kind == "person" else SUMMARY_INSTRUCTION,
+              profile: str | None = None, wants: str | None = None) -> str:
+    return run(guided(PERSON_SUMMARY_INSTRUCTION if kind == "person"
+                      else SUMMARY_INSTRUCTION, wants),
                context(project, updates, kind, profile))
 
 
@@ -570,11 +605,11 @@ def prep_context(name: str, kind: str, updates: list[dict], since: str | None,
 
 
 def prep(name: str, kind: str, updates: list[dict], since: str | None,
-         profile: str | None = None) -> str:
+         profile: str | None = None, wants: str | None = None) -> str:
     instruction = (PERSON_PREP_INSTRUCTION if kind == "person"
                    else PROJECT_PREP_INSTRUCTION)
     since_txt = since or "the beginning — this is the first one on record"
-    return run(instruction.format(since=since_txt),
+    return run(guided(instruction.format(since=since_txt), wants),
                prep_context(name, kind, updates, since, profile))
 
 
