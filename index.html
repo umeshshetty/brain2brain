@@ -54,6 +54,17 @@
   .card { background:var(--card); border:1px solid var(--line); border-radius:11px;
           padding:16px 18px; margin-bottom:14px; }
   .sec { margin:30px 0 0; }
+  /* Standing context, not a brief — flat and quiet, so it does not compete
+     with the cards below that actually change. */
+  .about { border:1px solid var(--line); border-radius:11px; padding:12px 14px;
+           margin:0 0 16px; }
+  .about.empty { border-style:dashed; }
+  .about.open { border-color:var(--accent); }
+  .about h3 { margin:0; font-size:12px; letter-spacing:.06em;
+              text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .about .abody { margin-top:8px; font-size:14px; line-height:1.55; }
+  .about .dim { margin-top:6px; display:block; font-size:13px; line-height:1.5; }
+  .about textarea { margin-top:9px; }
 
   /* Two panes on the home view only: what needs attention on the left,
      projects on the right. A project page goes back to one column — you are
@@ -372,6 +383,10 @@ let showAll = {};
 // type somewhere else.
 let pendingLinks = [], pendingFor = null;
 
+// Who a page is to you, while you are editing it. Kept out of the DOM read so
+// a rerender mid-edit does not lose what you typed.
+let editAbout = false, aboutDraft = null;
+
 /* One row of either pane.
  *
  * Acting on an item writes an update into the project it belongs to, and that
@@ -636,12 +651,46 @@ async function home(kind) {
 /* ---------------------------------------------------------- project ----- */
 /* Scope is in the URL, so a topic is a link you can keep: #/p/3, #/p/3/t/7,
    #/p/3/unfiled. "" is the whole project. */
+// Who this page is to you. The only field besides an update's body that you
+// write and nothing regenerates — so it renders as typed, line for line, and
+// the model that can draft one stops at the textarea.
+function aboutCard(p, W) {
+  const has = (p.about || "").trim();
+  if (!editAbout) return `
+    <div class="about${has ? "" : " empty"}">
+      <div class="row" style="align-items:baseline">
+        <h3>${W.aboutHead}</h3>
+        <button class="link" id="aboutedit" style="margin-left:auto"
+          >${has ? "edit" : "add"}</button>
+      </div>
+      ${has ? `<div class="abody">${esc(has).replace(/\n/g, "<br>")}</div>`
+            : `<div class="dim">${W.aboutBlurb}</div>`}
+    </div>`;
+  return `
+    <div class="about open">
+      <div class="row" style="align-items:baseline">
+        <h3>${W.aboutHead}</h3>
+      </div>
+      <textarea id="abouttext" rows="5"
+        placeholder="${esc(W.aboutHint)}">${esc(aboutDraft ?? p.about ?? "")}</textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="go" id="aboutsave">Save</button>
+        <button class="link" id="aboutcancel">cancel</button>
+        ${p.updates.length ? `<button class="link" id="aboutdraft"
+          >draft it from my notes</button>` : ""}
+        <span class="dim" style="margin-left:auto;font-size:13px"
+          >saving rebuilds the briefs below</span>
+      </div>
+    </div>`;
+}
+
 async function projectPage(id, scope) {
   app.className = "wrap";
   const [p, { projects: all }] = await Promise.all([
     api(`/api/project?id=${encodeURIComponent(id)}`), api("/api/projects"),
   ]);
-  if (pendingFor !== +id) { pendingLinks = []; pendingFor = +id; openAct = openKind = null; }
+  if (pendingFor !== +id) { pendingLinks = []; pendingFor = +id; openAct = openKind = null;
+                          editAbout = false; aboutDraft = null; }
   const others = all.filter(x => x.id !== +id);
   const othersById = Object.fromEntries(others.map(o => [o.id, o]));
   // A link you picked before the page reloaded, minus anything deleted since.
@@ -677,6 +726,12 @@ async function projectPage(id, scope) {
     addBtn: "Add note", list: "Conversations", del: "delete person",
     ask: "What did I promise them? What keeps coming up?",
     readBtn: "Read these notes", guests: "anything linked here from a project included",
+    aboutHead: "Who they are to you",
+    aboutBlurb: `Nothing here yet. A brief for your manager and a brief for someone
+      who reports to you are different documents read out of the same notes — say
+      which this is, and every brief below is written for it.`,
+    aboutHint: `How you two are related, what you work on together, how often you
+      speak, what they care about. A few lines. Yours — Claude never edits it.`,
     prepHead: "Before your next 1-1",
     prepBtn: "Prepare for the next one",
     prepBlurb: `Claude reads your notes with them, anything linked to their page,
@@ -692,6 +747,12 @@ async function projectPage(id, scope) {
     addBtn: "Add update", list: "Updates", del: "delete project",
     ask: "Why did we push the date? Who owns the migration?",
     readBtn: "Read this project", guests: "linked notes from your 1-1s included",
+    aboutHead: "What this is to you",
+    aboutBlurb: `Nothing here yet. Say what this project is and what your own stake
+      in it is, and every brief below is written for that rather than for nobody
+      in particular.`,
+    aboutHint: `What it is, what you own on it, who else is involved, what you are
+      watching for. A few lines. Yours — Claude never edits it.`,
     prepHead: "Before your next meeting",
     prepBtn: "Prepare for the meeting",
     prepBlurb: `Claude reads this project's updates, anything linked to it, and
@@ -711,7 +772,7 @@ async function projectPage(id, scope) {
   const topicOptions = sel => `<option value="">Unfiled</option>` + topics.map(t =>
     `<option value="${t.id}"${String(t.id) === String(sel) ? " selected" : ""}>${esc(t.name)}</option>`).join("");
 
-  const right = `<div>
+  const right = () => `<div>
     <div class="head">
       <a href="${W.home}" class="dim" style="text-decoration:none">${W.back}</a>
       <span class="sp"></span>
@@ -723,6 +784,8 @@ async function projectPage(id, scope) {
       ${p.updates.length} ${W.unit}${p.updates.length === 1 ? "" : "s"}
       ${topics.length ? ` · ${topics.length} topic${topics.length === 1 ? "" : "s"}` : ""}
       · last ${esc(ago(p.updates[0]?.created_at))}</div>
+
+    ${aboutCard(p, W)}
 
     <div class="chips">
       ${chip("", "All", p.updates.length)}
@@ -847,7 +910,7 @@ async function projectPage(id, scope) {
 
   // The pane on the left, the page on the right — the same shape as home,
   // because it is the same question asked of one page instead of all of them.
-  const shell = () => pagePane(p.pane || { items: [], updates: 0 }, p, W) + right;
+  const shell = () => pagePane(p.pane || { items: [], updates: 0 }, p, W) + right();
   app.className = "wrap two";
   app.innerHTML = shell();
 
@@ -963,6 +1026,36 @@ async function projectPage(id, scope) {
     };
     $("#body").oninput = suggest;
     suggest();
+
+    // ---- who this page is to you
+    if ($("#aboutedit")) $("#aboutedit").onclick = () => {
+      editAbout = true; aboutDraft = null; rerender();
+      const t = $("#abouttext"); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+    };
+    if ($("#aboutcancel")) $("#aboutcancel").onclick = () => {
+      editAbout = false; aboutDraft = null; rerender();
+    };
+    if ($("#aboutdraft")) $("#aboutdraft").onclick = e =>
+      busy(e.target, "Reading", async () => {
+        const r = await api("/api/about/draft", { project_id: p.id });
+        // Into the box, never into the store. Nothing is saved until you press
+        // Save, because this text is what every brief below is written against.
+        aboutDraft = r.about;
+        rerender();
+        toast("Draft — edit it, then Save");
+      });
+    if ($("#aboutsave")) $("#aboutsave").onclick = e => {
+      const text = $("#abouttext").value;
+      busy(e.target, "Saving", async () => {
+        await api("/api/about", { project_id: p.id, about: text });
+        editAbout = false; aboutDraft = null;
+        await reload();
+        // The briefs are gone rather than flagged: they were written for
+        // whoever this page used to be, and that is not visible on the page.
+        toast(text.trim() ? "Saved · briefs cleared, rebuild when you want them"
+                          : "Cleared");
+      });
+    };
 
     // ---- prepare for the next meeting
     if ($("#prepbtn")) $("#prepbtn").onclick = e =>

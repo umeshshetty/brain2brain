@@ -146,7 +146,7 @@ def post_summarize(b):
     if not updates:
         raise ValueError("nothing to summarise here yet — add an update first")
     with _AI_LOCK:
-        body = ai.summarize(label, updates, kind)
+        body = ai.summarize(label, updates, kind, p.get("about"))
     return store.save_summary(p["id"], body, max(u["id"] for u in updates),
                               tid, len(updates))
 
@@ -159,7 +159,7 @@ def post_ask(b):
     if not updates:
         raise ValueError("no updates in scope yet")
     with _AI_LOCK:
-        answer = ai.ask(label, updates, question, kind)
+        answer = ai.ask(label, updates, question, kind, p.get("about"))
     return store.save_answer(p["id"], question, answer, tid)
 
 
@@ -261,7 +261,8 @@ def post_page_agenda(b):
         raise ValueError("nothing to read here yet — add an update first")
     day = store.today()
     with _AI_LOCK:
-        items = ai.page_agenda(day, ctx["name"], ctx["kind"], ctx["updates"])
+        items = ai.page_agenda(day, ctx["name"], ctx["kind"], ctx["updates"],
+                               ctx["about"])
     return store.save_page_agenda(ctx["id"], items, ctx["newest"], day, ctx["total"])
 
 
@@ -307,6 +308,30 @@ def post_page_act(b):
     return out
 
 
+def post_about(b):
+    """Save who this page is to you. The only write that drops derived state."""
+    pid = _int(b.get("project_id"), "project")
+    about = b.get("about")
+    if not isinstance(about, str):
+        raise ValueError("about must be text")
+    if len(about) > store.ABOUT_MAX:
+        raise ValueError(f"keep it under {store.ABOUT_MAX} characters")
+    return store.set_about(pid, about)
+
+
+def post_about_draft(b):
+    """Propose a profile from the notes. Returns it; saves nothing.
+
+    The reader edits and presses Save, or does not. `about` steers every brief
+    for this page, so a model may write toward it but never into it.
+    """
+    ctx = store.page_agenda_context(_int(b.get("project_id"), "project"))
+    if not ctx["updates"]:
+        raise ValueError("nothing to read here yet — add an update first")
+    with _AI_LOCK:
+        return {"about": ai.draft_about(ctx["name"], ctx["kind"], ctx["updates"])}
+
+
 def post_prep(b):
     """Build the brief for the next meeting about this page.
 
@@ -322,7 +347,8 @@ def post_prep(b):
     if not ctx["total"]:
         raise ValueError("nothing to read yet — add an update first")
     with _AI_LOCK:
-        body = ai.prep(ctx["name"], ctx["kind"], ctx["updates"], since)
+        body = ai.prep(ctx["name"], ctx["kind"], ctx["updates"], since,
+                       ctx["about"])
     out = store.save_prep(pid, body, since, ctx["newest"], ctx["total"])
     out["counts"] = ctx["counts"]
     return out
@@ -347,6 +373,8 @@ WRITES = {
     "/api/agenda/act": post_agenda_act,
     "/api/page/refresh": post_page_agenda,
     "/api/page/act": post_page_act,
+    "/api/about": post_about,
+    "/api/about/draft": post_about_draft,
     "/api/prep": post_prep,
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,

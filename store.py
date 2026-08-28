@@ -1,8 +1,10 @@
-"""SQLite storage. Nine tables, and only one of them holds anything you typed.
+"""SQLite storage. Nine tables, and two columns hold anything you typed.
 
 `updates.body` is the raw text, stored exactly as entered and never rewritten.
-Everything else — summaries, answers — is derived, cached, and safe to throw
-away: `DELETE FROM summaries` costs one Claude call to rebuild.
+`projects.about` — who a page is to you — is the other, and every brief for
+that page is written against it. Neither is ever written by a model.
+Everything else — summaries, answers, panes, preps — is derived, cached, and
+safe to throw away: `DELETE FROM summaries` costs one Claude call to rebuild.
 
 A project has topics; an update may sit in one of them or in none. Both halves
 of that matter. Filing is optional so capture stays as fast as it was — being
@@ -30,10 +32,15 @@ PRELUDE = """
 -- and Ask exactly as a project's updates do, so people live here under a `kind`
 -- rather than in a parallel set of four tables that would need all of it again.
 -- The table name is then half a lie, and that is the price.
+-- `about` is who this page is to you, in your words: your manager, your
+-- report, the vendor you renew in March. It is the second thing in the store
+-- that cannot be regenerated, and the only one besides updates.body — every
+-- brief for this page is written against it, so a model must never write it.
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     kind        TEXT NOT NULL DEFAULT 'project',
+    about       TEXT,
     created_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS topics (
@@ -227,6 +234,9 @@ def _migrate(conn) -> list[str]:
         conn.execute("ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL"
                      " DEFAULT 'project'")
         done.append("projects.kind")
+    if _has(conn, "projects") and "about" not in _cols(conn, "projects"):
+        conn.execute("ALTER TABLE projects ADD COLUMN about TEXT")
+        done.append("projects.about")
     if _has(conn, "summaries") and "read_updates" not in _cols(conn, "summaries"):
         conn.execute("ALTER TABLE summaries ADD COLUMN read_updates INTEGER NOT NULL"
                      " DEFAULT 0")
@@ -337,6 +347,38 @@ def rename_project(pid: int, name: str) -> dict:
         conn.close()
 
 
+ABOUT_MAX = 2000
+
+
+def set_about(pid: int, about: str) -> dict:
+    """Who this page is to you. Yours to write, and nothing else may write it.
+
+    Every brief for this page is composed against it — a 1-1 brief for your
+    manager and one for your report are different documents read out of the
+    same notes — so the caches built before it are briefs for the wrong reader.
+    They are dropped rather than flagged. A summary is one Claude call to get
+    back; a brief that curates for a relationship you no longer have is wrong
+    in a way you cannot see on the page. Answers stay: they answered the
+    question asked, and they quote the raw text rather than interpreting it.
+
+    Raw text, stored as typed, never rewritten — the same rule updates.body
+    has, for the same reason. Clearing it is a real loss and the UI says so.
+    """
+    about = about.strip()[:ABOUT_MAX]
+    conn = connect()
+    try:
+        with conn:
+            n = conn.execute("UPDATE projects SET about = ? WHERE id = ?",
+                             (about or None, pid)).rowcount
+            if not n:
+                raise ValueError("no such project or person")
+            for t in ("summaries", "preps", "page_agenda"):
+                conn.execute(f"DELETE FROM {t} WHERE project_id = ?", (pid,))
+        return {"id": pid, "about": about or None}
+    finally:
+        conn.close()
+
+
 def delete_project(pid: int) -> dict:
     """Deletes the updates too, via ON DELETE CASCADE. The caller is expected
     to have asked first — this is the one irreversible thing in the app."""
@@ -361,7 +403,7 @@ def project(pid: int) -> dict:
     """
     conn = connect()
     try:
-        p = conn.execute("SELECT id, name, kind, created_at FROM projects"
+        p = conn.execute("SELECT id, name, kind, about, created_at FROM projects"
                          " WHERE id = ?", (pid,)).fetchone()
         if not p:
             raise ValueError("no such project")
@@ -824,7 +866,7 @@ def page_agenda_context(pid: int) -> dict:
     """One page's updates, oldest last, guests stamped with where they came from."""
     conn = connect()
     try:
-        p = conn.execute("SELECT id, name, kind FROM projects WHERE id = ?",
+        p = conn.execute("SELECT id, name, kind, about FROM projects WHERE id = ?",
                          (pid,)).fetchone()
         if not p:
             raise ValueError("no such project or person")
@@ -846,6 +888,7 @@ def page_agenda_context(pid: int) -> dict:
         total = len(_page_scope(conn, pid))
         return {
             "id": p["id"], "name": p["name"], "kind": p["kind"],
+            "about": p["about"],
             "updates": list(reversed(rows)),
             "newest": max((r["id"] for r in rows), default=0),
             "total": total,
@@ -974,7 +1017,7 @@ def prep_context(pid: int, since: str | None) -> dict:
     """
     conn = connect()
     try:
-        p = conn.execute("SELECT id, name, kind FROM projects WHERE id = ?",
+        p = conn.execute("SELECT id, name, kind, about FROM projects WHERE id = ?",
                          (pid,)).fetchone()
         if not p:
             raise ValueError("no such project or person")
@@ -1024,6 +1067,7 @@ def prep_context(pid: int, since: str | None) -> dict:
                          key=lambda r: (r["created_at"], r["id"]))
         return {
             "id": p["id"], "name": p["name"], "kind": p["kind"],
+            "about": p["about"],
             "since": since,
             "updates": updates,
             "newest": max((r["id"] for r in updates), default=0),

@@ -81,7 +81,29 @@ def run(instruction: str, context: str) -> str:
     return out
 
 
-def context(project: str, updates: list[dict]) -> str:
+def about(kind: str, text: str | None) -> list[str]:
+    """The reader's own words about who this page is to them, if they wrote any.
+
+    It goes at the top, before the notes, because it changes how everything
+    under it should be read: "she is my skip-level, we meet monthly" makes the
+    same sentence a different fact than "he is the vendor AE". Headed as the
+    reader's standing description and explicitly marked as not a note, so it is
+    never quoted back as though someone said it in a meeting, and never dated.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    noun = "person" if kind == "person" else "project"
+    return [f"# Who this {noun} is to the reader",
+            "",
+            "The reader wrote this themselves. It is standing context, not a"
+            " note and not something anyone said — never quote it as one.",
+            "",
+            text, "", "---", ""]
+
+
+def context(project: str, updates: list[dict], kind: str = "project",
+            profile: str | None = None) -> str:
     """Raw updates, oldest first, each stamped with its date.
 
     Oldest first so the model reads the story in the order it happened, and so
@@ -94,7 +116,7 @@ def context(project: str, updates: list[dict]) -> str:
     sentence with no mouth attached to it, and a person's brief that shows what
     they said about a project reads as one conversation rather than two.
     """
-    lines = [f"# Project: {project}", ""]
+    lines = about(kind, profile) + [f"# Project: {project}", ""]
     for u in updates:
         head = u["created_at"][:16].replace("T", " ")
         via = u.get("via")
@@ -124,7 +146,14 @@ this project. Use them, and say who they came from when you do.
 Rules: use only what is in the updates. Do not invent owners, dates, or
 outcomes. If updates contradict each other, say so rather than picking one.
 Where a claim rests on one update, quote a few words of it. Be terse — this is
-read in the 30 seconds before a call. Output markdown. No preamble."""
+read in the 30 seconds before a call. Output markdown. No preamble.
+If the material opens with "Who this project is to the reader", that is the
+reader's own standing description of their stake in it — what they own, who
+they answer to on it, what they are watching for. It decides what belongs here:
+lead with what bears on that stake and cut what does not, and use the reader's
+own words for the work. It changes what you select and how you weigh it — never
+what is true. It adds no facts, and nothing in it may be written up as though
+it happened or as though anyone said it."""
 
 ASK_INSTRUCTION = """\
 Below are raw, dated updates for one project, oldest first, then a question.
@@ -132,7 +161,10 @@ Below are raw, dated updates for one project, oldest first, then a question.
 Answer the question using only the updates. Quote the words you relied on and
 give the date they came from. If the updates do not answer it, say exactly what
 is missing rather than guessing. Be direct and short. Output markdown. No
-preamble."""
+preamble.
+If the material opens with "Who this is to the reader", that is standing
+context about the relationship, not an update. It may shape what you consider
+relevant; it is never evidence, and it is never quoted as an answer."""
 
 
 PERSON_SUMMARY_INSTRUCTION = """\
@@ -158,16 +190,30 @@ Rules: use only what is in the notes. Do not invent commitments, dates, or
 feelings, and do not turn a single passing mention into a pattern. If notes
 contradict each other, say so rather than picking one. Where a claim rests on
 one note, quote a few words of it. Be terse — this is read in the 30 seconds
-before the call. Output markdown. No preamble."""
+before the call. Output markdown. No preamble.
+If the material opens with "Who this person is to the reader", that is the
+reader's own standing description of the relationship, and it decides what
+belongs here. A brief about the reader's manager leads with what that person
+will ask them for and what needs escalating; a brief about someone who reports
+to the reader leads with what that person is blocked on and what the reader
+owes them; a brief about a peer, a vendor or a partner team leads with what was
+agreed between them and what is outstanding. Curate for the relationship it
+describes: keep what matters to it, cut what does not, and use the reader's own
+words for the work. It changes what you select and how you weigh it — never
+what is true. It adds no facts, and nothing in it may be written up as though
+it happened or as though anyone said it."""
 
 
-def summarize(project: str, updates: list[dict], kind: str = "project") -> str:
+def summarize(project: str, updates: list[dict], kind: str = "project",
+              profile: str | None = None) -> str:
     return run(PERSON_SUMMARY_INSTRUCTION if kind == "person" else SUMMARY_INSTRUCTION,
-               context(project, updates))
+               context(project, updates, kind, profile))
 
 
-def ask(project: str, updates: list[dict], question: str, kind: str = "project") -> str:
-    ctx = context(project, updates) + f"\n---\n\n# Question\n\n{question}\n"
+def ask(project: str, updates: list[dict], question: str, kind: str = "project",
+        profile: str | None = None) -> str:
+    ctx = (context(project, updates, kind, profile)
+           + f"\n---\n\n# Question\n\n{question}\n")
     noun = "conversations with one person" if kind == "person" else "one project"
     return run(ASK_INSTRUCTION.replace("one project", noun), ctx)
 
@@ -379,16 +425,20 @@ At most 30 items. If the updates say nothing worth surfacing, return an empty
 array.
 
 Output the JSON array and nothing else: no prose, no explanation, no code
-fence."""
+fence.
+If the material opens with "Who this {noun} is to the reader", that is the
+reader's own standing description of the relationship. Use it to rank: what
+matters to that relationship goes in, what does not gets cut before the rest.
+It never adds an item and is never itself an item."""
 
 
 def page_agenda_context(today: str, name: str, kind: str,
-                        updates: list[dict]) -> str:
+                        updates: list[dict], profile: str | None = None) -> str:
     """One page's updates, stamped and attributed. No ids in the headings:
     everything here belongs to the page you are looking at, and an item has
     nowhere else it could be logged."""
     head = "Person" if kind == "person" else "Project"
-    lines = [f"# {head}: {name}", ""]
+    lines = about(kind, profile) + [f"# {head}: {name}", ""]
     for u in updates:
         stamp = u["created_at"][:16].replace("T", " ")
         if u.get("topic"):
@@ -402,13 +452,14 @@ def page_agenda_context(today: str, name: str, kind: str,
     return "\n".join(lines)
 
 
-def page_agenda(today: str, name: str, kind: str, updates: list[dict]) -> list[dict]:
+def page_agenda(today: str, name: str, kind: str, updates: list[dict],
+                profile: str | None = None) -> list[dict]:
     """Items for one page. Reuses the cross-project parser, which drops anything
     malformed; `project_id` is absent by design and comes back None, because the
     page you are on is the only place one of these could belong."""
     noun = "person" if kind == "person" else "project"
     raw = run(PAGE_AGENDA_INSTRUCTION.format(noun=noun),
-              page_agenda_context(today, name, kind, updates))
+              page_agenda_context(today, name, kind, updates, profile))
     items = _items(raw, [], cap=30)
     for it in items:
         it.pop("project_id", None)
@@ -447,7 +498,18 @@ specific enough to read out loud.
 Rules: use only what is in the notes. Do not invent commitments, dates, or
 feelings. If notes contradict each other, say so rather than picking one. Where
 a claim rests on one note, quote a few words of it and give its date. Be terse —
-this is read in the minutes before the call. Output markdown. No preamble."""
+this is read in the minutes before the call. Output markdown. No preamble.
+If the material opens with "Who this person is to the reader", that is the
+reader's own standing description of the relationship, and it decides what
+belongs here. A brief about the reader's manager leads with what that person
+will ask them for and what needs escalating; a brief about someone who reports
+to the reader leads with what that person is blocked on and what the reader
+owes them; a brief about a peer, a vendor or a partner team leads with what was
+agreed between them and what is outstanding. Curate for the relationship it
+describes: keep what matters to it, cut what does not, and use the reader's own
+words for the work. It changes what you select and how you weigh it — never
+what is true. It adds no facts, and nothing in it may be written up as though
+it happened or as though anyone said it."""
 
 PROJECT_PREP_INSTRUCTION = """\
 Below are dated updates, oldest first, ahead of a meeting about one project.
@@ -477,12 +539,20 @@ Rules: use only what is in the updates. Do not invent owners, dates, or
 outcomes. If updates contradict each other, say so rather than picking one.
 Where a claim rests on one update, quote a few words of it and give its date.
 Be terse — this is read in the minutes before the call. Output markdown. No
-preamble."""
+preamble.
+If the material opens with "Who this project is to the reader", that is the
+reader's own standing description of their stake in it — what they own, who
+they answer to on it, what they are watching for. It decides what belongs here:
+lead with what bears on that stake and cut what does not, and use the reader's
+own words for the work. It changes what you select and how you weigh it — never
+what is true. It adds no facts, and nothing in it may be written up as though
+it happened or as though anyone said it."""
 
 
-def prep_context(name: str, kind: str, updates: list[dict], since: str | None) -> str:
+def prep_context(name: str, kind: str, updates: list[dict], since: str | None,
+                 profile: str | None = None) -> str:
     head = "Person" if kind == "person" else "Project"
-    lines = [f"# {head}: {name}", ""]
+    lines = about(kind, profile) + [f"# {head}: {name}", ""]
     for u in updates:
         stamp = u["created_at"][:16].replace("T", " ")
         if u.get("topic"):
@@ -499,9 +569,60 @@ def prep_context(name: str, kind: str, updates: list[dict], since: str | None) -
     return "\n".join(lines)
 
 
-def prep(name: str, kind: str, updates: list[dict], since: str | None) -> str:
+def prep(name: str, kind: str, updates: list[dict], since: str | None,
+         profile: str | None = None) -> str:
     instruction = (PERSON_PREP_INSTRUCTION if kind == "person"
                    else PROJECT_PREP_INSTRUCTION)
     since_txt = since or "the beginning — this is the first one on record"
     return run(instruction.format(since=since_txt),
-               prep_context(name, kind, updates, since))
+               prep_context(name, kind, updates, since, profile))
+
+
+# -------------------------------------------------------- drafting a profile
+
+DRAFT_ABOUT_INSTRUCTION = """\
+Below are raw, dated notes about one {noun}, oldest first.
+
+Propose a short standing description of who this {noun} is to the reader — the
+kind of thing they would write once and edit rarely. It will be shown to them
+to correct before anything is saved, so it is a starting point, not a verdict.
+
+At most six lines, one fact each, no headings and no prose paragraph. Cover
+only what the notes actually support:
+
+{lines}
+
+Rules that matter more than completeness. Write only what the notes support,
+and where they support it thinly, say so in the line itself ("seems to", "one
+note only"). Never guess the relationship: if the notes do not say how the
+reader and this {noun} are related, write the line as "Relationship: ?" and
+nothing more — that is the one thing only they can tell you, and a confident
+wrong guess there poisons every brief written afterwards. Leave out any line
+you have nothing for rather than padding it. No preamble, no sign-off, no
+offer to revise."""
+
+_DRAFT_PERSON = """\
+  · how they and the reader are related, if the notes make it plain
+  · what they work on, and what they own
+  · what they raise repeatedly, or measurably care about
+  · how often the two of them appear to speak"""
+
+_DRAFT_PROJECT = """\
+  · what this project is, in one line
+  · what the reader's own stake in it is, if the notes make it plain
+  · who else is involved and what they own
+  · the dates or commitments it keeps turning on"""
+
+
+def draft_about(name: str, kind: str, updates: list[dict]) -> str:
+    """A proposed profile, for the reader to edit. Never saved by this call.
+
+    The one place a model writes toward `about` at all, and it stops one step
+    short of it: the text lands in the box, and nothing reaches the store until
+    the reader presses Save. Standing context that a model wrote and nobody
+    read would curate every later brief on the strength of a guess.
+    """
+    noun = "person" if kind == "person" else "project"
+    lines = _DRAFT_PERSON if kind == "person" else _DRAFT_PROJECT
+    return run(DRAFT_ABOUT_INSTRUCTION.format(noun=noun, lines=lines),
+               context(name, updates, kind))
