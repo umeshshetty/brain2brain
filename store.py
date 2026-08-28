@@ -323,6 +323,32 @@ def _kind(k) -> str:
     return k
 
 
+def backup() -> dict:
+    """A copy of the store, beside it, named for the minute it was taken.
+
+    `VACUUM INTO` rather than copying the file: it runs inside a read
+    transaction, so the copy is consistent even if the server is mid-write and
+    the WAL has uncommitted pages in it. `cp brain.db elsewhere` does not
+    promise that, and the one thing in here that cannot be rebuilt is the one
+    thing a torn copy would lose.
+
+    It refuses to overwrite — SQLite will not write into a file that exists —
+    which also means a second click in the same minute is a no-op that says so
+    rather than a silent replacement of the copy you meant to keep.
+    """
+    when = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
+    dst = DB_PATH.with_name(f"{DB_PATH.stem}.{when}.bak")
+    if dst.exists():
+        return {"path": str(dst), "bytes": dst.stat().st_size, "made": False}
+    conn = connect()
+    try:
+        # A parameter, not an f-string: the filename is data.
+        conn.execute("VACUUM INTO ?", (str(dst),))
+    finally:
+        conn.close()
+    return {"path": str(dst), "bytes": dst.stat().st_size, "made": True}
+
+
 def projects() -> list[dict]:
     """Projects and people together, each carrying its `kind`.
 

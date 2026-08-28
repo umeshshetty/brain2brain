@@ -147,6 +147,12 @@ def post_move_update(b):
     return store.move_update(_int(b.get("id")), b.get("topic_id"))
 
 
+def post_backup(b):
+    """A copy of the store on disk. Not a download: the file belongs beside the
+    one it copies, and a browser save dialog would put it in Downloads."""
+    return store.backup()
+
+
 def post_rehome_update(b):
     """Move an update to another page — a filing fix, not an edit."""
     return store.rehome_update(_int(b.get("id"), "update"),
@@ -435,6 +441,7 @@ WRITES = {
     "/api/update": post_update,
     "/api/update/move": post_move_update,
     "/api/update/rehome": post_rehome_update,
+    "/api/backup": post_backup,
     "/api/update/link": post_link,
     "/api/update/delete": post_delete_update,
     "/api/answer/delete": post_delete_answer,

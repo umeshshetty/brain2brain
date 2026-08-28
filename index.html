@@ -180,6 +180,9 @@
   .upd .when button { visibility:hidden; }
   .upd:hover .when button { visibility:visible; }
   .upd .body { white-space:pre-wrap; word-wrap:break-word; margin-top:3px; }
+  /* A pasted URL is one unbreakable word and will otherwise widen the
+     column past the viewport. */
+  .upd .body a, .md a { word-break:break-all; }
   /* The filing control doubles as the label, so it is always visible — you
      should be able to see what a thing is filed under without hovering it. */
   select.filed, select#into {
@@ -299,12 +302,50 @@ const today = () => {
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
+/* A pasted link should be clickable — half of what lands in an update is a
+   doc, a ticket, a PR. This runs on text that has ALREADY been escaped, which
+   is what makes it safe rather than careful: by the time it looks, no quote,
+   angle bracket or `javascript:` can survive to be matched, and the href it
+   writes is that same escaped text, which the attribute decodes back to what
+   you typed. http(s) only, for the same reason. */
+const linkify = e => String(e).replace(/\bhttps?:\/\/[^\s<>"']+/g, m => {
+  // The text arrives escaped, so a quote or angle bracket you typed is an
+  // entity now rather than a character. Stop the URL there: it ended when you
+  // typed it, and it must not ride into the href. `&amp;` is deliberately not
+  // in this set — a query string is full of them and they belong.
+  const cut = m.search(/&(?:quot|#39|lt|gt);/);
+  const u = cut > -1 ? m.slice(0, cut) : m;
+  // A URL at the end of a sentence does not include the full stop.
+  const tail = (u.match(/[.,:!?)\]]+$/) || [""])[0];
+  const href = tail ? u.slice(0, -tail.length) : u;
+  // Everything the link did not claim stays exactly as it was.
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>`
+       + m.slice(href.length);
+});
+
 /* Claude is asked for markdown, so the page renders the subset the prompts
    actually ask for: headings, bullets, bold, inline code, quotes. Everything
    is escaped BEFORE any tag is introduced — Claude's output is text we are
    displaying, and it is quoting your updates back at you. */
+/* Search reads across every page, so it lives on the home view and nowhere
+   else — a second box on a project page would be a second set of results to
+   look in, for a question that was never about that page. `/` is how you get
+   to it from wherever you are, which is the part that was missing. */
+document.addEventListener("keydown", e => {
+  if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target || {};
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "") || t.isContentEditable;
+  if (typing) return;               // a slash in a sentence is a slash
+  e.preventDefault();
+  const onHome = !location.hash || location.hash === "#/" || location.hash === "#/people";
+  if (onHome) { const b = $("#q"); if (b) { b.focus(); b.select(); } return; }
+  // On a project page `#q` is the Ask box, which is a different question.
+  wantSearch = true;
+  location.hash = "#/";
+});
+
 function md(src) {
-  const inline = t => esc(t)
+  const inline = t => linkify(esc(t))
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
   const out = [];
@@ -461,6 +502,15 @@ let searchQ = "", searchRes = null, searchSeq = 0, searchTimer = null;
 // Recorded by day, and set BEFORE the call, so a failure costs one attempt
 // rather than one per render.
 let catchUpDay = null, catchUpBusy = false;
+/* The scope whose whole history is on screen. A page that has been going for a
+   year is thousands of nodes, and you came to read the last few. Keyed by
+   scope rather than a boolean, so opening a project and then a topic inside it
+   does not inherit the decision you made about the other one. */
+let olderOn = "";
+/* Set by `/` pressed on a page that is not the home view. The hash change
+   routes asynchronously, so the key cannot focus the box itself — it says what
+   it wanted and `home()` does it when the box exists. */
+let wantSearch = false;
 
 /* One row of either pane.
  *
@@ -710,7 +760,7 @@ async function home(kind) {
     <div>
       <div class="head"><h1>Brain</h1></div>
       <input type="text" id="q" class="search" autocomplete="off" spellcheck="false"
-        placeholder="Search everything — every update on every project and person"
+        placeholder="Search everything — every update on every page   ·   press /"
         value="${esc(searchQ)}">
       <div id="sout"></div>
       <div id="browse">
@@ -730,6 +780,10 @@ async function home(kind) {
             <span class="dim">${esc(ago(p.last_update_at))}</span></span>
         </a>`).join("") + `</div>`
         : `<div class="empty">${W.empty}</div>`}
+      <div class="dim" style="margin-top:22px;font-size:12px">
+        Everything is one SQLite file.
+        <button class="link" id="bak">Take a backup</button>
+      </div>
       </div>
     </div>`;
   app.innerHTML = nowPane(ag, byId, projects) + right();
@@ -738,6 +792,17 @@ async function home(kind) {
   const rerender = () => { app.innerHTML = nowPane(ag, byId, projects) + right(); wire(); };
 
   app.onclick = async e => {
+    if (e.target.id === "bak") {
+      // No spinner label from `busy`: this is a file copy, not a Claude call,
+      // and it is done before the word would finish rendering.
+      try {
+        const r = await api("/api/backup", {});
+        const kb = Math.round(r.bytes / 1024);
+        toast(r.made ? `Copied to ${r.path.split("/").pop()} · ${kb} KB`
+                     : `Already have ${r.path.split("/").pop()} from this minute`);
+      } catch (err) { toast(err.message, true); }
+      return;
+    }
     const more = e.target.closest("[data-more]");
     if (more) { showAll[more.dataset.more] = !showAll[more.dataset.more]; return rerender(); }
     const b = e.target.closest("[data-act]");
@@ -823,7 +888,8 @@ async function home(kind) {
     if ($("#actnote")) $("#actnote").focus();
   }
   wire();
-  if (openAct === null) $("#newname").focus();
+  if (wantSearch) { wantSearch = false; if ($("#q")) $("#q").focus(); }
+  else if (openAct === null) $("#newname").focus();
 
   // Only a pane that already exists and has been overtaken by the calendar.
   // A pane you have never built is a deliberate first act, and an empty store
@@ -925,6 +991,12 @@ async function projectPage(id, scope) {
   const inScope = u => tid ? u.topic_id === tid
                      : unfiledView ? u.topic_id === null : true;
   const updates = p.updates.filter(inScope);
+  const OLDER = 40;
+  const olderKey = `${id}:${scope}`;
+  // A function, not a value: `shell()` runs again after every click that
+  // changes what is on screen, and this is one of them.
+  const shown = () => updates.length > OLDER && olderOn !== olderKey
+                      ? updates.slice(0, OLDER) : updates;
   const scopeName = tid ? byId[tid].name : unfiledView ? "Unfiled" : "whole project";
 
   // Unfiled is a filing view, not a subject: it is whatever has not been sorted
@@ -1105,7 +1177,7 @@ async function projectPage(id, scope) {
     <div class="sec">
       <h2>${W.list} <span class="scope">${esc(scopeName)}</span>
         <span class="dim" style="text-transform:none;letter-spacing:0">${updates.length}</span></h2>
-      ${updates.length ? updates.map(u => u.via ? `
+      ${updates.length ? shown().map(u => u.via ? `
         <div class="upd guest">
           <div class="when">${esc(when(u.created_at))}
             <span class="guestof">${u.via.kind === "person"
@@ -1115,7 +1187,7 @@ async function projectPage(id, scope) {
             <a class="link" href="#/p/${u.via.id}">open</a>
             <button class="link danger" data-unlink="${u.id}" data-pid="${p.id}"
               >unlink</button></div>
-          <div class="body">${esc(u.body)}</div>
+          <div class="body">${linkify(esc(u.body))}</div>
         </div>` : `
         <div class="upd">
           <div class="when">${esc(when(u.created_at))}
@@ -1123,7 +1195,7 @@ async function projectPage(id, scope) {
               >${topicOptions(u.topic_id ?? "")}</select>`
               : u.topic_id ? `<span class="filed">${esc(byId[u.topic_id]?.name || "")}</span>` : ""}
             <button class="link danger" data-delupd="${u.id}">delete</button></div>
-          <div class="body">${esc(u.body)}</div>
+          <div class="body">${linkify(esc(u.body))}</div>
           <div class="lks" style="margin-top:7px">
             ${u.links.map(l => lkChip(l, u.id)).join("")}
             <select class="addlk" data-link="${u.id}"><option value="">+ link…</option>${
@@ -1139,6 +1211,10 @@ async function projectPage(id, scope) {
                or re-file one from <a href="${href("")}">All</a>.`
             : unfiledView ? `Everything is filed.`
             : W.none}</div>`}
+      ${updates.length > OLDER ? `<button class="more" id="older">${
+        olderOn === olderKey
+          ? `Show the most recent ${OLDER}`
+          : `Show the other ${updates.length - OLDER}`}</button>` : ""}
     </div></div>`;
 
   // The pane on the left, the page on the right — the same shape as home,
@@ -1379,6 +1455,10 @@ async function projectPage(id, scope) {
     // that update is the record — nothing here sets a status.
     const more = e.target.closest("[data-more]");
     if (more) { showAll[more.dataset.more] = !showAll[more.dataset.more]; return rerender(); }
+    if (e.target.id === "older") {
+      olderOn = olderOn === olderKey ? "" : olderKey;
+      return rerender();
+    }
     const act = e.target.closest("[data-act]");
     if (act) {
       const i = +act.dataset.i;

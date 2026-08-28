@@ -396,6 +396,16 @@ matches are offered above the update rows. A guest appears once, on its home
 page. Newest first, capped at 200, and the cap is printed — a silent cap reads
 as "there was nothing else", which is the one thing it must not do.
 
+**`/` from anywhere goes there and puts the cursor in it.** Search stays on
+the home view and nowhere else — a box on a project page would be a second set
+of results to look in, for a question that was never about that page — so the
+shortcut is how you reach it, and it is the part that was missing. It is
+ignored while you are typing into anything, and with a modifier held, because a
+slash in a sentence is a slash. From a project page it cannot focus the box
+itself: `#q` there is the Ask box, and the hash change routes asynchronously,
+so it records what it wanted and the home view does it on arrival — once, so
+the next visit still focuses Add.
+
 Mechanically: `hilite()` escapes before it marks, same discipline as `md()`,
 and the whole thing keys off one module state (`searchQ`) with a sequence
 counter so a slow answer never overwrites a newer keystroke's. Results render
@@ -430,6 +440,16 @@ permits NULLs in primary key columns and every whole-project row would collide.
 | **Flat** | Topics do not nest. A project, a topic, an update — three levels is the whole model, and the second one that asks for a tree is the one to argue with. |
 | **Unfiled** | A filing view, not a subject. Summary and Ask are deliberately **not** offered on it: a brief about "whatever is unsorted" changes meaning every time you file something. |
 | **Re-filing** | Changes `topic_id` and nothing else. The raw text is never touched. |
+
+**A page shows its most recent 40 and offers the rest.** Topics are the real
+answer to a page that has grown too long to read, but they are optional and a
+year-old project that never used them is thousands of nodes you scroll past to
+reach the ones you came for. The whole history is already in memory — the store
+sends it all in one read — so this is a rendering cap and nothing more: the
+count in the heading is the true one, the button says how many it is holding
+back, and pressing it shows every one. Which scope you opened is remembered per
+scope, so opening a topic inside a project you expanded does not inherit that
+decision.
 
 **Deleting a topic must never delete updates.** `updates.topic_id` is
 `ON DELETE SET NULL`, not `CASCADE` — the updates fall back to Unfiled and only
@@ -679,6 +699,16 @@ blocks DNS rebinding. Strict CSP; the page has zero external references.
 back at you, so it is untrusted text — `md()` escapes first and introduces tags
 second.
 
+**A pasted URL is clickable, and `linkify()` is the same discipline read
+backwards.** Half of what lands in an update is a doc, a ticket, a PR. It runs
+on text that has *already* been escaped, which is what makes it safe rather
+than careful: by the time it looks, no quote, angle bracket or `javascript:`
+can survive to be matched, and the href it writes is that same escaped text,
+which the attribute decodes back to what you typed. `http(s)` only. A quote or
+bracket you typed is an entity by then, so the URL stops there — it ended when
+you typed it and must not ride into the href — while `&amp;` is deliberately
+allowed through, because a query string is full of them.
+
 ## Deleting
 
 Deleting a project or a person deletes their updates, and there is no undo —
@@ -686,6 +716,15 @@ the page makes you type the name. Deleting a topic keeps its updates
 (see *Topics*). Unlinking keeps both (see *Linking*). Deleting an update or an
 answer is one click, because an answer is regenerable and a mis-typed update is
 noise.
+
+**Take a backup** on the home view copies the store beside itself, named for
+the minute. `VACUUM INTO` rather than copying the file: it runs inside a read
+transaction, so the copy is consistent even mid-write with pages still in the
+WAL, which `cp brain.db elsewhere` does not promise. It refuses to overwrite —
+a second click in the same minute says so rather than silently replacing the
+copy you meant to keep. Not a download: the file belongs beside the one it
+copies, and a save dialog would put it in Downloads. `.bak` is already ignored
+by git.
 
 ## History
 
