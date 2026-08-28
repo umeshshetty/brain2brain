@@ -41,6 +41,9 @@ def _int(v, what="id") -> int:
 # ----------------------------------------------------------------- handlers
 
 def api_projects(q):
+    # Both kinds in one read: the home view needs a count for the tab you are
+    # not looking at, and filtering server-side would cost a second request to
+    # get it back.
     return {"projects": store.projects()}
 
 
@@ -49,7 +52,7 @@ def api_project(q):
 
 
 def post_project(b):
-    return store.create_project(b.get("name") or "")
+    return store.create_project(b.get("name") or "", b.get("kind"))
 
 
 def post_rename(b):
@@ -90,7 +93,7 @@ def post_delete_answer(b):
 
 
 def _scope(b):
-    """Resolve a request to (project, topic_id, label, updates-oldest-first).
+    """Resolve a request to (project, topic_id, label, updates-oldest-first, kind).
 
     A topic_id narrows the AI to that topic's updates and gives the summary its
     own slot. Without one the scope is the whole project. Either way the model
@@ -103,13 +106,14 @@ def _scope(b):
     tid = None if raw in (None, "", 0, "0") else _int(raw, "topic")
     label = p["name"]
     updates = p["updates"]
+    kind = p.get("kind", "project")
     if tid is not None:
         topic = next((t for t in p["topics"] if t["id"] == tid), None)
         if not topic:
             raise ValueError("no such topic")
         label = f"{p['name']} — {topic['name']}"
         updates = [u for u in updates if u["topic_id"] == tid]
-    return p, tid, label, list(reversed(updates))
+    return p, tid, label, list(reversed(updates)), kind
 
 
 def post_summarize(b):
@@ -118,11 +122,11 @@ def post_summarize(b):
     The Claude call happens with no transaction open — it takes seconds, and
     holding a write lock across it would block every other tab.
     """
-    p, tid, label, updates = _scope(b)
+    p, tid, label, updates, kind = _scope(b)
     if not updates:
         raise ValueError("nothing to summarise here yet — add an update first")
     with _AI_LOCK:
-        body = ai.summarize(label, updates)
+        body = ai.summarize(label, updates, kind)
     return store.save_summary(p["id"], body, updates[-1]["id"], tid)
 
 
@@ -130,11 +134,11 @@ def post_ask(b):
     question = (b.get("question") or "").strip()
     if not question:
         raise ValueError("ask something")
-    p, tid, label, updates = _scope(b)
+    p, tid, label, updates, kind = _scope(b)
     if not updates:
         raise ValueError("no updates in scope yet")
     with _AI_LOCK:
-        answer = ai.ask(label, updates, question)
+        answer = ai.ask(label, updates, question, kind)
     return store.save_answer(p["id"], question, answer, tid)
 
 

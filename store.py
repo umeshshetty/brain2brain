@@ -24,9 +24,15 @@ DB_PATH = pathlib.Path(os.environ.get("BRAIN_DB") or
 # foreign_keys=ON, adding a column that REFERENCES topics — or renaming a table
 # while such a column exists — fails outright if the target table is missing.
 PRELUDE = """
+-- A person is the same thing a project is: a bucket you drop dated raw text
+-- into and ask Claude about. Notes from a 1-1 want topics, a summary, staleness
+-- and Ask exactly as a project's updates do, so people live here under a `kind`
+-- rather than in a parallel set of four tables that would need all of it again.
+-- The table name is then half a lie, and that is the price.
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
+    kind        TEXT NOT NULL DEFAULT 'project',
     created_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS topics (
@@ -169,6 +175,10 @@ def _migrate(conn) -> list[str]:
             " FROM summaries_old")
         conn.execute("DROP TABLE summaries_old")
         done.append("summaries rekeyed by scope")
+    if _has(conn, "projects") and "kind" not in _cols(conn, "projects"):
+        conn.execute("ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL"
+                     " DEFAULT 'project'")
+        done.append("projects.kind")
     if _has(conn, "agenda") and "read_updates" not in _cols(conn, "agenda"):
         conn.execute("ALTER TABLE agenda ADD COLUMN read_updates INTEGER NOT NULL DEFAULT 0")
         done.append("agenda.read_updates")
@@ -200,13 +210,29 @@ def _rows(cur) -> list[dict]:
 
 # ------------------------------------------------------------------ projects
 
+KINDS = ("project", "person")
+
+
+def _kind(k) -> str:
+    k = (k or "project").strip().lower()
+    if k not in KINDS:
+        raise ValueError("a thing is either a project or a person")
+    return k
+
+
 def projects() -> list[dict]:
+    """Projects and people together, each carrying its `kind`.
+
+    Both at once on purpose: the home view tabs between them and needs the
+    count for the side you are not on, and the agenda wants everything anyway —
+    a promise made in a 1-1 is as due as one made in a project update.
+    """
     conn = connect()
     try:
         # Counted with subqueries, not two LEFT JOINs: joining both would
         # multiply the rows and report updates × topics for each.
         return _rows(conn.execute("""
-            SELECT p.id, p.name, p.created_at,
+            SELECT p.id, p.name, p.kind, p.created_at,
                    (SELECT count(*) FROM updates u WHERE u.project_id = p.id)    AS updates,
                    (SELECT count(*) FROM topics  t WHERE t.project_id = p.id)    AS topics,
                    (SELECT max(created_at) FROM updates u WHERE u.project_id = p.id)
@@ -218,21 +244,25 @@ def projects() -> list[dict]:
         conn.close()
 
 
-def create_project(name: str) -> dict:
+def create_project(name: str, kind=None) -> dict:
+    kind = _kind(kind)
     name = name.strip()
     if not name:
-        raise ValueError("a project needs a name")
+        raise ValueError("a person needs a name" if kind == "person"
+                         else "a project needs a name")
     if len(name) > 120:
         raise ValueError("that name is too long")
     conn = connect()
     try:
         with conn:
             cur = conn.execute(
-                "INSERT INTO projects (name, created_at) VALUES (?, ?)",
-                (name, now()))
-        return {"id": cur.lastrowid, "name": name}
+                "INSERT INTO projects (name, kind, created_at) VALUES (?, ?, ?)",
+                (name, kind, now()))
+        return {"id": cur.lastrowid, "name": name, "kind": kind}
     except sqlite3.IntegrityError:
-        raise ValueError(f"there is already a project called {name!r}")
+        # Names are unique across both kinds. Two things called the same thing
+        # would be two pages you cannot tell apart in the Now pane.
+        raise ValueError(f"there is already a project or person called {name!r}")
     finally:
         conn.close()
 
@@ -279,8 +309,8 @@ def project(pid: int) -> dict:
     """
     conn = connect()
     try:
-        p = conn.execute("SELECT id, name, created_at FROM projects WHERE id = ?",
-                         (pid,)).fetchone()
+        p = conn.execute("SELECT id, name, kind, created_at FROM projects"
+                         " WHERE id = ?", (pid,)).fetchone()
         if not p:
             raise ValueError("no such project")
         out = dict(p)
@@ -522,7 +552,7 @@ def agenda_context() -> dict:
     try:
         out, dropped = [], 0
         for p in conn.execute(
-                "SELECT id, name FROM projects ORDER BY name COLLATE NOCASE"):
+                "SELECT id, name, kind FROM projects ORDER BY name COLLATE NOCASE"):
             n = conn.execute("SELECT count(*) FROM updates WHERE project_id = ?",
                              (p["id"],)).fetchone()[0]
             rows = _rows(conn.execute("""
@@ -531,7 +561,7 @@ def agenda_context() -> dict:
                 WHERE u.project_id = ? ORDER BY u.id DESC LIMIT ?
             """, (p["id"], AGENDA_PER_PROJECT)))
             dropped += max(0, n - AGENDA_PER_PROJECT)
-            out.append({"id": p["id"], "name": p["name"],
+            out.append({"id": p["id"], "name": p["name"], "kind": p["kind"],
                         "updates": list(reversed(rows))})
         return {
             "projects": out,

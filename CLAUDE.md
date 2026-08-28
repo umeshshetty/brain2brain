@@ -1,6 +1,7 @@
 # Brain
 
-A page per project. You drop raw updates in; Claude Code reads them back to you.
+A page per project and per person. You drop raw updates in; Claude Code
+reads them back to you.
 
 ```
 python3 app.py          # → http://127.0.0.1:8765/
@@ -47,6 +48,52 @@ should reach the disk on our behalf) and `--setting-sources ""` (no hooks firing
 on every summary, no CLAUDE.md picked up from whatever directory it runs in).
 
 `BRAIN_MODEL` pins a model. `BRAIN_AI_TIMEOUT` is the ceiling, default 180s.
+
+## People
+
+**User request, 2026-08-28.** *"Have a People Section, where I can add 1-1 and
+also track what I am talking with people about."*
+
+Home tabs between **Projects** and **People** (`#/` and `#/people`). A person's
+page is a project's page: you drop 1-1 notes in as raw text, file them under
+topics if you want, and ask Claude what they add up to.
+
+**A person is not a new kind of thing — it is the same bucket under a `kind`.**
+Notes from a 1-1 want dated raw text, topics, a cached summary, per-scope
+staleness and Ask, which is precisely what an update already has. So `projects`
+gained `kind TEXT NOT NULL DEFAULT 'project'` instead of four parallel tables
+that would need every one of those behaviours built again. The table name is
+then half a lie, and that is the price. Existing rows migrate to `'project'`,
+and a row with no kind at all still renders as a project.
+
+What actually differs is **what you ask of the notes**, and that is one prompt:
+
+| | |
+|---|---|
+| A project brief | Where it stands · Open · Recently changed · Unresolved |
+| A 1-1 brief | Where things stand · Open between you · **They keep raising** · Since last time · Worth asking |
+
+*They keep raising* is the section worth being right about, and the prompt says
+so: only things appearing in more than one conversation, never a single passing
+mention promoted into a pattern. Verified against four 1-1s — it found the
+on-call rota (raised twice, still unfixed) and the scope question, with the
+dates each came from, and did not invent a third.
+
+**A commitment made to a person is as due as one made to a project.** The Now
+pane reads people and projects in the same call, and an item can point at
+either — a promise in a 1-1 that never surfaced next to the project deadlines
+would make the pane quietly wrong. People are headed `# Person 5: Priya` in the
+context so the model can write *"Give Priya an answer on GoBMP"* rather than
+guessing at a noun; ids are shared, so an item needs no new field to link.
+
+**What this deliberately is not.** People are not extracted from your project
+updates, and mentioning someone in an update does not file anything on their
+page. That is an entity resolver, it is what v1 died of, and the raw text
+already says who was involved — Ask on the project will tell you. A person's
+page holds what you put there.
+
+Names are unique across both kinds: two pages you cannot tell apart in the Now
+pane would be worse than the collision.
 
 ## Topics
 
@@ -157,8 +204,9 @@ second.
 
 ## Deleting
 
-Deleting a project deletes its updates, and there is no undo — the page makes
-you type the name. Deleting a topic keeps its updates (see *Topics*). Deleting an update or an answer is one click, because an
+Deleting a project or a person deletes their updates, and there is no undo —
+the page makes you type the name. Deleting a topic keeps its updates
+(see *Topics*). Deleting an update or an answer is one click, because an
 answer is regenerable and a mis-typed update is noise.
 
 ## History

@@ -106,31 +106,56 @@ is missing rather than guessing. Be direct and short. Output markdown. No
 preamble."""
 
 
-def summarize(project: str, updates: list[dict]) -> str:
-    return run(SUMMARY_INSTRUCTION, context(project, updates))
+PERSON_SUMMARY_INSTRUCTION = """\
+Below are raw, dated notes from conversations with one person, oldest first.
+
+Write a brief for someone about to walk into their next 1-1 with them. Use
+these sections, and drop any section you have nothing for:
+
+**Where things stand** — 2-4 sentences on what this person is working on and
+how it is going, as the notes describe it.
+**Open between you** — bullets. Things either of you said you would do that
+nothing since says are done. Say which of you it is on.
+**They keep raising** — bullets, only for things that come up in more than one
+conversation. This is the section worth being right about.
+**Since last time** — bullets, only from the most recent conversation.
+**Worth asking** — questions the notes raise and never answer.
+
+Rules: use only what is in the notes. Do not invent commitments, dates, or
+feelings, and do not turn a single passing mention into a pattern. If notes
+contradict each other, say so rather than picking one. Where a claim rests on
+one note, quote a few words of it. Be terse — this is read in the 30 seconds
+before the call. Output markdown. No preamble."""
 
 
-def ask(project: str, updates: list[dict], question: str) -> str:
+def summarize(project: str, updates: list[dict], kind: str = "project") -> str:
+    return run(PERSON_SUMMARY_INSTRUCTION if kind == "person" else SUMMARY_INSTRUCTION,
+               context(project, updates))
+
+
+def ask(project: str, updates: list[dict], question: str, kind: str = "project") -> str:
     ctx = context(project, updates) + f"\n---\n\n# Question\n\n{question}\n"
-    return run(ASK_INSTRUCTION, ctx)
+    noun = "conversations with one person" if kind == "person" else "one project"
+    return run(ASK_INSTRUCTION.replace("one project", noun), ctx)
 
 
 # ------------------------------------------------------------------- agenda
 
 AGENDA_INSTRUCTION = """\
-Below are recent dated updates for every project, oldest first within each
-project, and then today's date.
+Below are recent dated updates, oldest first, for every project and for every
+person whose 1-1 notes are kept, and then today's date.
 
 Return a JSON array of what needs attention now, across all of them.
 
 An item is something the updates put on a day — a deadline, a cutover, a
 recurring report, a meeting, a promise with a date attached — that falls today,
 is coming up, or has already passed with nothing in the updates saying it was
-done.
+done. A commitment made to a person in a 1-1 counts exactly as much as one made
+in a project update.
 
 Each item is an object with exactly these keys:
-  "project_id"  the number after "# Project" in the heading above that
-                project's updates — the number itself, not the project's name
+  "project_id"  the number after "# Project" or "# Person" in the heading
+                above those updates — the number itself, not the name
   "when"        one of: "overdue", "today", "this week", "later"
   "text"        one short line. Imperative if it is something to do
                 ("Send the UxM update"), plain if it is an event
@@ -152,15 +177,18 @@ fence."""
 def agenda_context(today: str, projects: list[dict]) -> str:
     """Every project at once, each update stamped and attributed.
 
-    The project id is in the heading rather than the name alone, because the
-    model has to hand back something the app can turn into a link, and two
-    projects can reasonably be called similar things.
+    The id is in the heading rather than the name alone, because the model has
+    to hand back something the app can turn into a link, and two things can
+    reasonably be called similar things. People are headed as people: "send
+    Priya the answer" is a different sentence from "send the GNC update", and
+    the model can only write it if it knows which it is looking at.
     """
     lines = []
     for p in projects:
-        lines.append(f"# Project {p['id']}: {p['name']}")
+        head = "Person" if p.get("kind") == "person" else "Project"
+        lines.append(f"# {head} {p['id']}: {p['name']}")
         if not p["updates"]:
-            lines.append("(no updates yet)")
+            lines.append("(no notes yet)" if head == "Person" else "(no updates yet)")
         for u in p["updates"]:
             head = u["created_at"][:16].replace("T", " ")
             if u.get("topic"):
