@@ -54,6 +54,18 @@
   .card { background:var(--card); border:1px solid var(--line); border-radius:11px;
           padding:16px 18px; margin-bottom:14px; }
   .sec { margin:30px 0 0; }
+  .search { margin-bottom:14px; }
+  mark { background:var(--warn-bg); color:inherit; border-radius:3px; padding:0 1px; }
+  .spages { margin:2px 0 14px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .sgroup { margin-bottom:18px; }
+  .shead { display:flex; gap:8px; align-items:baseline; font-weight:600;
+           text-decoration:none; color:var(--ink); margin-bottom:6px; }
+  .shead .dim { font-weight:400; font-size:12.5px; }
+  .srow { display:block; padding:7px 10px; border-left:2px solid var(--line);
+          margin:0 0 4px 4px; font-size:13.5px; line-height:1.5;
+          text-decoration:none; color:var(--ink); border-radius:0 7px 7px 0; }
+  .srow:hover { background:var(--card); border-left-color:var(--accent); }
+  .sdate { display:block; color:var(--dim); font-size:12px; }
   /* Standing context, not a brief — flat and quiet, so it does not compete
      with the cards below that actually change. */
   .about { border:1px solid var(--line); border-radius:11px; padding:12px 14px;
@@ -390,6 +402,11 @@ let pendingLinks = [], pendingFor = null;
 // a rerender mid-edit does not lose what you typed.
 let editAbout = false, aboutDraft = null;
 
+// Search is transient — a question you are asking right now, not a place you
+// keep — so it lives here rather than in the URL, and survives the pane
+// re-rendering underneath it. seq drops answers that arrive out of order.
+let searchQ = "", searchRes = null, searchSeq = 0;
+
 /* One row of either pane.
  *
  * Acting on an item writes an update into the project it belongs to, and that
@@ -548,6 +565,66 @@ function pagePane(pane, p, W) {
 }
 
 /* ------------------------------------------------------------- home ----- */
+// Highlight every occurrence of q in text, escaping first. Same discipline as
+// md(): tags are introduced only after the raw text can no longer carry any.
+function hilite(text, q) {
+  const parts = [];
+  const lower = text.toLowerCase(), needle = q.toLowerCase();
+  let i = 0;
+  for (let j = lower.indexOf(needle); j !== -1; j = lower.indexOf(needle, i)) {
+    parts.push(esc(text.slice(i, j)), `<mark>${esc(text.slice(j, j + q.length))}</mark>`);
+    i = j + q.length;
+  }
+  parts.push(esc(text.slice(i)));
+  return parts.join("");
+}
+
+// A window around the first match, rather than the whole update: search rows
+// are for recognising the update you meant, and the page it links to has the
+// full text.
+function snippet(body, q) {
+  const flat = body.replace(/\s+/g, " ").trim();
+  const j = flat.toLowerCase().indexOf(q.toLowerCase());
+  const start = Math.max(0, j - 60);
+  const end = Math.min(flat.length, j + q.length + 120);
+  return (start ? "… " : "") + hilite(flat.slice(start, end), q)
+       + (end < flat.length ? " …" : "");
+}
+
+// The whole-store read, grouped by the page each match lives on. Plain
+// substring, no model, nothing written — the correlation primitive where a
+// false positive costs one glance.
+function searchView(r) {
+  if (!r) return "";
+  const q = r.q;
+  if (!r.pages.length && !r.updates.length)
+    return `<div class="empty">Nothing says “${esc(q)}” yet.</div>`;
+
+  const groups = [], byPage = new Map();
+  for (const u of r.updates) {
+    if (!byPage.has(u.page.id)) {
+      const g = { page: u.page, rows: [] };
+      byPage.set(u.page.id, g); groups.push(g);
+    }
+    byPage.get(u.page.id).rows.push(u);
+  }
+  return `
+    ${r.pages.length ? `<div class="spages"><span class="dim">Pages</span> ${r.pages.map(pg =>
+      `<a class="lk${pg.kind === "person" ? " person" : ""}" href="#/p/${pg.id}"><b>${hilite(pg.name, q)}</b></a>`).join(" ")}</div>` : ""}
+    ${groups.map(g => `
+      <div class="sgroup">
+        <a class="shead" href="#/p/${g.page.id}">${esc(g.page.name)}
+          <span class="dim">${g.page.kind === "person" ? "person" : "project"} · ${g.rows.length} match${g.rows.length === 1 ? "" : "es"}</span></a>
+        ${g.rows.map(u => `
+          <a class="srow" href="#/p/${u.page.id}">
+            <span class="sdate">${esc(u.created_at.slice(0, 10))}${u.topic ? ` · ${esc(u.topic)}` : ""}</span>
+            <span>${snippet(u.body, q)}</span>
+          </a>`).join("")}
+      </div>`).join("")}
+    ${r.dropped ? `<div class="dim" style="margin-top:10px;font-size:13px">
+      Showing the newest ${r.updates.length} of ${r.total} matching updates — narrow the search for the rest.</div>` : ""}`;
+}
+
 async function home(kind) {
   // Two reads, one round trip each way. The agenda is its own call so a slow
   // or empty pane never holds up the list. Both kinds come back together so the
@@ -573,6 +650,11 @@ async function home(kind) {
   const right = `
     <div>
       <div class="head"><h1>Brain</h1></div>
+      <input type="text" id="q" class="search" autocomplete="off" spellcheck="false"
+        placeholder="Search everything — every update on every project and person"
+        value="${esc(searchQ)}">
+      <div id="sout"></div>
+      <div id="browse">
       <div class="chips">
         <a class="chip${people ? "" : " on"}" href="#/">Projects<span>${nProj}</span></a>
         <a class="chip${people ? " on" : ""}" href="#/people">People<span>${nPeep}</span></a>
@@ -589,6 +671,7 @@ async function home(kind) {
             <span class="dim">${esc(ago(p.last_update_at))}</span></span>
         </a>`).join("") + `</div>`
         : `<div class="empty">${W.empty}</div>`}
+      </div>
     </div>`;
   app.innerHTML = nowPane(ag, byId, projects) + right;
 
@@ -636,9 +719,32 @@ async function home(kind) {
 
   // Re-bound after every re-render of the pane: opening an item's form
   // rewrites the whole shell, and a dead Add button is worse than a slow one.
+  // Results land in #sout and the lists hide, rather than re-rendering the
+  // whole view: an innerHTML replace would take the focus out of the box on
+  // every answer, and search is typed into, continuously.
+  const drawSearch = () => {
+    const on = searchQ.trim().length >= 2;
+    $("#sout").innerHTML = on ? searchView(searchRes) : "";
+    $("#browse").style.display = on ? "none" : "";
+  };
+
   function wire() {
     $("#newbtn").onclick = add;
     $("#newname").onkeydown = e => { if (e.key === "Enter") add(); };
+    $("#q").oninput = async e => {
+      searchQ = e.target.value;
+      const q = searchQ.trim();
+      if (q.length < 2) { searchRes = null; return drawSearch(); }
+      const seq = ++searchSeq;
+      const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      if (seq !== searchSeq) return;   // a newer keystroke owns the screen
+      searchRes = r;
+      drawSearch();
+    };
+    $("#q").onkeydown = e => {
+      if (e.key === "Escape") { searchQ = ""; e.target.value = ""; searchRes = null; drawSearch(); }
+    };
+    drawSearch();
     $("#nowbtn").onclick = e => busy(e.target, "Reading", async () => {
       openAct = openKind = null;
       await api("/api/agenda/refresh", {});

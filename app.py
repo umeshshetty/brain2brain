@@ -164,6 +164,12 @@ def post_ask(b):
     return store.save_answer(p["id"], question, answer, tid)
 
 
+def api_search(q):
+    """Substring search across every page. A read like any other — no model,
+    nothing cached, nothing written — so it lives in READS with no ceremony."""
+    return store.search((q.get("q", [""])[0] or "")[:200])
+
+
 def api_agenda(q):
     return store.agenda()
 
@@ -368,7 +374,8 @@ def post_prep(b):
 
 READS = {"/api/projects": api_projects,
          "/api/project": api_project,
-         "/api/agenda": api_agenda}
+         "/api/agenda": api_agenda,
+         "/api/search": api_search}
 WRITES = {
     "/api/project/new": post_project,
     "/api/project/rename": post_rename,

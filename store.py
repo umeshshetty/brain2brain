@@ -753,6 +753,52 @@ def delete_answer(aid: int) -> dict:
         conn.close()
 
 
+SEARCH_MAX = 200
+
+
+def search(q: str) -> dict:
+    """Every update and page that says this, across the whole store.
+
+    The one read that spans everything by design. It is plain substring match —
+    SQL, no model, no ranking — because search is the correlation primitive
+    where a false positive costs nothing: you typed the word, you can see the
+    line it matched, and nothing is written or filed anywhere. The clever
+    matching (whole words, confirmation) is reserved for the places that
+    create edges; a lookup gets to be dumb and instant.
+
+    Newest first, because "where did this last come up" is the usual question.
+    Guests are not duplicated: an update matches once, on its home page.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"q": q, "pages": [], "updates": [], "total": 0, "dropped": 0}
+    like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    conn = connect()
+    try:
+        pages = _rows(conn.execute(
+            "SELECT id, name, kind FROM projects WHERE name LIKE ? ESCAPE '\\'"
+            " ORDER BY name COLLATE NOCASE", (like,)))
+        total = conn.execute(
+            "SELECT count(*) FROM updates WHERE body LIKE ? ESCAPE '\\'",
+            (like,)).fetchone()[0]
+        rows = _rows(conn.execute("""
+            SELECT u.id, u.body, u.created_at, t.name AS topic,
+                   p.id AS page_id, p.name AS page_name, p.kind AS page_kind
+            FROM updates u
+            JOIN projects p ON p.id = u.project_id
+            LEFT JOIN topics t ON t.id = u.topic_id
+            WHERE u.body LIKE ? ESCAPE '\\'
+            ORDER BY u.created_at DESC, u.id DESC LIMIT ?
+        """, (like, SEARCH_MAX)))
+        for r in rows:
+            r["page"] = {"id": r.pop("page_id"), "name": r.pop("page_name"),
+                         "kind": r.pop("page_kind")}
+        return {"q": q, "pages": pages, "updates": rows,
+                "total": total, "dropped": max(0, total - SEARCH_MAX)}
+    finally:
+        conn.close()
+
+
 # -------------------------------------------------------------------- agenda
 
 # Per project, so one noisy project cannot crowd out a quiet one that has the

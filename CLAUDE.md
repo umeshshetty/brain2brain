@@ -253,6 +253,47 @@ names you created yourself; and nothing is linked until you press it, so a wrong
 guess costs one glance. This is the closest the app gets to an entity resolver,
 and the distance is deliberate.
 
+## Search — correlation as a read
+
+**User request, 2026-08-28.** *"with so much data and lots of them that can
+overlap or correlate, how can you make it easy to correlate acorss project,
+people ? Is a knowledge graph a good idea ?"*
+
+The knowledge graph answer is no — a *stored* one, model-extracted entities and
+edges in tables, is v1's architecture, and v1 died of its entity resolver. A
+wrong edge is worse than no edge because it is kept: it poisons every brief
+after it, invisibly, which is exactly what the Allianz leak looked like. The
+store's design rule also forbids it a second way: everything derived here is
+disposable and rebuildable for one call, and a graph that accretes edge by edge
+is derived state with memory.
+
+What the app does instead is **correlate at read time, attribute everything,
+store nothing** — which it already did three times (links, the mention nudge,
+prep's *elsewhere*) before this section existed. Search is the fourth and
+bluntest: a box on the home page over every update on every page.
+
+**It is a substring match, and being dumb is the point.** No model, no ranking,
+no index. The clever matching — whole words, confirmation buttons — is reserved
+for the places that *create edges*, because a false positive there files
+something. A lookup can afford to be dumb: you typed the word, the matched line
+is on screen, nothing is written anywhere. `%` and `_` are escaped so they
+search as themselves; two characters minimum so one keystroke does not scan the
+store.
+
+Results group by the page each match lives on — name, kind, count, then dated
+rows windowed around the first match — because "who else has said this" *is*
+the correlation question, and the grouping is the answer. Pages whose *name*
+matches are offered above the update rows. A guest appears once, on its home
+page. Newest first, capped at 200, and the cap is printed — a silent cap reads
+as "there was nothing else", which is the one thing it must not do.
+
+Mechanically: `hilite()` escapes before it marks, same discipline as `md()`,
+and the whole thing keys off one module state (`searchQ`) with a sequence
+counter so a slow answer never overwrites a newer keystroke's. Results render
+into their own node rather than re-rendering the view — an innerHTML replace
+would pull focus out of the box mid-word. Search is transient, so it lives in
+no URL: it is a question you are asking, not a place you keep.
+
 ## Topics
 
 **User request, 2026-08-28.** A project accumulates several threads at once —
