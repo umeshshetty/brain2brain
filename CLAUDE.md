@@ -435,6 +435,24 @@ reads as *"there was nothing else"*, which is the one thing it must not do.
 **The cross-project pane is on the home view only.** Inside a project you want
 that project's dates, not everyone's — which is a second pane, below.
 
+**It rebuilds itself once when the calendar has moved past it,** and that is the
+only thing in this app that spends a Claude call without being asked. *Review
+finding, 2026-08-28: everything here is pull — the app can know the cutover is
+today and will not say so until you open the page and press refresh.*
+
+The trigger is **outdated and nothing else**. Being *behind* is a judgement — a
+new update might be worth a rebuild or might not, and it is your click to
+spend. The day turning over is not a judgement and not a choice you made: a
+pane that says *"today"* was true on the morning it was built and is a lie the
+next morning, so the first look of the day should not be at one.
+
+| | |
+|---|---|
+| **Once, recorded before the call** | Keyed by day, and set before the request rather than after it, so a failure costs one attempt rather than one per render. |
+| **Never a first build** | Only a pane that already exists. Building one is a deliberate first act, and an empty store has nothing to read. |
+| **It says so while it does it** | The banner reads *"Built for Aug 27 — rebuilding for today…"* rather than going quiet, and on failure it says that out loud and puts the honest complaint back. A pane silently describing yesterday is the exact thing this exists to prevent. |
+| **`BRAIN_NO_CATCHUP=1`** | An unasked call is the kind of thing a person should be able to refuse. The server writes the answer into the page beside the token. |
+
 ## Dates — the pane on a page
 
 **User request, 2026-08-28.** *"some key notes, updates, deadlines, info for a

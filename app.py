@@ -26,6 +26,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "index.html")
 TOKEN = secrets.token_urlsafe(24)
 MAX_BODY = 1 << 20
+# The Now pane rebuilds itself once when the calendar has moved past it, since
+# half of what it says is "today". That is one unasked Claude call a day, and
+# an unasked call is the kind of thing a person should be able to refuse.
+CATCHUP = "0" if os.environ.get("BRAIN_NO_CATCHUP") else "1"
 
 # `claude -p` takes seconds and costs tokens. One at a time keeps a stray
 # double-click from launching two identical summaries of the same project.
@@ -441,7 +445,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/":
             with open(PAGE, encoding="utf-8") as fh:
-                html = fh.read().replace("__TOKEN__", TOKEN)
+                html = (fh.read().replace("__TOKEN__", TOKEN)
+                                 .replace("__CATCHUP__", CATCHUP))
             return self._send(200, html.encode(), "text/html; charset=utf-8")
         if path not in READS:
             return self._json(404, {"error": "not found"})

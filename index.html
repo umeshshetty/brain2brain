@@ -257,6 +257,9 @@
 
 <script>
 const TOKEN = "__TOKEN__";
+// The one thing this app does without being asked. Set BRAIN_NO_CATCHUP=1 to
+// turn it off; the server writes "0" in here when you have.
+const CATCHUP = "__CATCHUP__" !== "0";
 const $ = s => document.querySelector(s);
 const app = $("#app");
 
@@ -415,6 +418,16 @@ let editAbout = false, aboutDraft = null;
 // re-rendering underneath it. seq drops answers that arrive out of order.
 let searchQ = "", searchRes = null, searchSeq = 0, searchTimer = null;
 
+// Half the Now pane says "today", and that stops being true at midnight — so
+// the morning's first look would otherwise be at a pane that is confidently
+// describing yesterday. Only the calendar triggers this. A new update leaves
+// the pane visibly *behind* and waits for you, because that is a Claude call
+// you might not want to spend; the day turning over is not a choice you made.
+//
+// Recorded by day, and set BEFORE the call, so a failure costs one attempt
+// rather than one per render.
+let catchUpDay = null, catchUpBusy = false;
+
 /* One row of either pane.
  *
  * Acting on an item writes an update into the project it belongs to, and that
@@ -518,7 +531,8 @@ function nowPane(ag, byId, all) {
         <button class="link" id="nowbtn">${ag.built ? "refresh" : "Read all projects"}</button>
       </div>
       ${ag.stale ? `<div class="stale" style="display:block;margin-bottom:12px">
-        ${ag.behind ? `${ag.behind} new update${ag.behind === 1 ? "" : "s"} since this`
+        ${catchUpBusy ? `Built for ${esc(ag.for_date)} — rebuilding for today…`
+          : ag.behind ? `${ag.behind} new update${ag.behind === 1 ? "" : "s"} since this`
           : ag.outdated ? `Built for ${esc(ag.for_date)} — the day has turned over`
           : `The updates behind this have changed`}</div>` : ""}
       ${body}
@@ -776,6 +790,27 @@ async function home(kind) {
   }
   wire();
   if (openAct === null) $("#newname").focus();
+
+  // Only a pane that already exists and has been overtaken by the calendar.
+  // A pane you have never built is a deliberate first act, and an empty store
+  // has nothing to read — neither is ours to spend a call on.
+  if (CATCHUP && ag.built && ag.outdated && ag.updates && catchUpDay !== today()) {
+    catchUpDay = today();
+    catchUpBusy = true;
+    rerender();
+    try {
+      await api("/api/agenda/refresh", {});
+      catchUpBusy = false;
+      await route();
+      toast("Now is rebuilt for today");
+    } catch (e) {
+      // Said out loud and not retried. A pane quietly describing yesterday is
+      // the failure this exists to prevent, so it must not fail quietly either.
+      catchUpBusy = false;
+      rerender();
+      toast(`Could not rebuild Now for today — ${e.message}`, true);
+    }
+  }
 }
 
 /* ---------------------------------------------------------- project ----- */
