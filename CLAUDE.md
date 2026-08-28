@@ -309,6 +309,23 @@ names you created yourself; and nothing is linked until you press it, so a wrong
 guess costs one glance. This is the closest the app gets to an entity resolver,
 and the distance is deliberate.
 
+**Moving an update is filing, not editing.** *move to…* on an update's own row
+changes `updates.project_id` and nothing else about it — the text is not
+touched, and it arrives at the new page as that page's own update rather than
+as a guest. It exists because capture and filing are now separable (see *Adding
+from anywhere*), and an Inbox you cannot empty is worse than no Inbox.
+
+| | |
+|---|---|
+| **Only its home page offers it** | A guest is not that page's text to re-file, and the control is absent on a guest row exactly as *delete* is. |
+| **The topic does not travel** | A `topic_id` is only meaningful inside the project that owns the topic, so it is cleared and the update lands in Unfiled, where you can see that it needs filing. |
+| **It cannot visit itself** | A link to the destination is dropped in the same transaction. Every other link survives — they were about the text, not about where it lived. |
+| **Nothing is cleared** | Both pages' `read_updates` counts move, so both briefs say they are stale on their own. Silently dropping them would tell you less than the pages already do. |
+
+Bordered rather than dashed, and it turns amber on hover: linking adds a place,
+moving changes the only one there is, and the two controls sit next to each
+other.
+
 ## Search — correlation as a read
 
 **User request, 2026-08-28.** *"with so much data and lots of them that can

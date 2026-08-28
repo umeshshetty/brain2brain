@@ -147,6 +147,12 @@ def post_move_update(b):
     return store.move_update(_int(b.get("id")), b.get("topic_id"))
 
 
+def post_rehome_update(b):
+    """Move an update to another page — a filing fix, not an edit."""
+    return store.rehome_update(_int(b.get("id"), "update"),
+                               _int(b.get("project_id"), "project"))
+
+
 def post_delete_update(b):
     return store.delete_update(_int(b.get("id")))
 
@@ -428,6 +434,7 @@ WRITES = {
     "/api/topic/delete": post_delete_topic,
     "/api/update": post_update,
     "/api/update/move": post_move_update,
+    "/api/update/rehome": post_rehome_update,
     "/api/update/link": post_link,
     "/api/update/delete": post_delete_update,
     "/api/answer/delete": post_delete_answer,

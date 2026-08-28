@@ -708,6 +708,54 @@ def move_update(uid: int, topic_id) -> dict:
         conn.close()
 
 
+def rehome_update(uid: int, pid: int) -> dict:
+    """Move an update to a different page. Its text is not touched.
+
+    Filing something on the wrong page is a filing mistake, and the app already
+    holds that filing mistakes must never cost raw text — which until now left
+    delete-and-retype as the only answer, and that costs exactly the thing the
+    rule protects. This is `move_update` one level up.
+
+    Its topic goes, for the same reason `_own_topic` refuses one from another
+    project: a topic id is only meaningful inside the project that owns it. It
+    lands unfiled on its new page, which is where a thing you have just moved
+    honestly belongs.
+
+    Any link to the page it is moving to goes as well — an update cannot visit
+    its own home, and a row saying otherwise would render it twice. Links to
+    everywhere else are kept: they were about the update, not about where it
+    lived.
+
+    Nothing is cleared. Both pages' briefs recorded how many updates they read,
+    and both counts have just moved, so both go visibly stale on their own —
+    which is better than dropping them, because here there is something on the
+    page to see.
+    """
+    conn = connect()
+    try:
+        row = conn.execute("SELECT project_id FROM updates WHERE id = ?",
+                           (uid,)).fetchone()
+        if not row:
+            raise ValueError("no such update")
+        was = conn.execute("SELECT name FROM projects WHERE id = ?",
+                           (row["project_id"],)).fetchone()
+        to = conn.execute("SELECT name, kind FROM projects WHERE id = ?", (pid,)).fetchone()
+        if not to:
+            raise ValueError("no such project or person")
+        if row["project_id"] == pid:
+            return {"id": uid, "project_id": pid, "moved": False,
+                    "from": was["name"], "to": to["name"]}
+        with conn:
+            conn.execute("UPDATE updates SET project_id = ?, topic_id = NULL"
+                         " WHERE id = ?", (pid, uid))
+            conn.execute("DELETE FROM update_links WHERE update_id = ? AND project_id = ?",
+                         (uid, pid))
+        return {"id": uid, "project_id": pid, "moved": True,
+                "from": was["name"], "to": to["name"], "kind": to["kind"]}
+    finally:
+        conn.close()
+
+
 def delete_update(uid: int) -> dict:
     conn = connect()
     try:

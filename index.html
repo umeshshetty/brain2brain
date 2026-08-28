@@ -204,6 +204,10 @@
                  color:var(--dim); background:var(--card);
                  border:1px dashed var(--line); max-width:150px; }
   select.addlk:hover { color:var(--ink); border-color:var(--accent); }
+  /* Linking adds a place; moving changes the only one there is. A solid
+     border says the second is not the same gesture as the first. */
+  select.addlk.mv { border-style:solid; }
+  select.addlk.mv:hover { color:var(--warn); border-color:var(--warn); }
   .upd.guest { border-left-style:dashed; }
   .guestof { color:var(--dim); font-size:12px; }
   .guestof b { color:var(--ink); font-weight:500; }
@@ -1125,6 +1129,9 @@ async function projectPage(id, scope) {
             <select class="addlk" data-link="${u.id}"><option value="">+ link…</option>${
               others.filter(o => !u.links.some(l => l.id === o.id)).map(o =>
                 `<option value="${o.id}">${esc(o.name)}</option>`).join("")}</select>
+            ${others.length ? `<select class="addlk mv" data-rehome="${u.id}"
+              ><option value="">move to…</option>${others.map(o =>
+                `<option value="${o.id}">${esc(o.name)}</option>`).join("")}</select>` : ""}
           </div>
         </div>`).join("")
         : `<div class="empty">${tid
@@ -1344,6 +1351,18 @@ async function projectPage(id, scope) {
       $("#body").value = draft;               // keep what you were typing
       $("#body").focus();
       return;
+    }
+    const mv = e.target.closest("[data-rehome]");
+    if (mv && mv.value) {
+      mv.disabled = true;
+      try {
+        const r = await api("/api/update/rehome",
+                            { id: +mv.dataset.rehome, project_id: +mv.value });
+        // Both pages' briefs read a set that has just changed size, so both
+        // will now say so themselves. Nothing here needs clearing.
+        toast(`Moved to ${r.to} — unfiled there`);
+      } catch (err) { toast(err.message, true); }
+      return reload();
     }
     const sel = e.target.closest("[data-move]");
     if (!sel) return;
