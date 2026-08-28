@@ -60,8 +60,25 @@ def post_delete_project(b):
     return store.delete_project(_int(b.get("id")))
 
 
+def post_topic(b):
+    return store.create_topic(_int(b.get("project_id"), "project"), b.get("name") or "")
+
+
+def post_rename_topic(b):
+    return store.rename_topic(_int(b.get("id")), b.get("name") or "")
+
+
+def post_delete_topic(b):
+    return store.delete_topic(_int(b.get("id")))
+
+
 def post_update(b):
-    return store.add_update(_int(b.get("project_id"), "project"), b.get("body") or "")
+    return store.add_update(_int(b.get("project_id"), "project"),
+                            b.get("body") or "", b.get("topic_id"))
+
+
+def post_move_update(b):
+    return store.move_update(_int(b.get("id")), b.get("topic_id"))
 
 
 def post_delete_update(b):
@@ -72,32 +89,53 @@ def post_delete_answer(b):
     return store.delete_answer(_int(b.get("id")))
 
 
+def _scope(b):
+    """Resolve a request to (project, topic_id, label, updates-oldest-first).
+
+    A topic_id narrows the AI to that topic's updates and gives the summary its
+    own slot. Without one the scope is the whole project. Either way the model
+    only ever sees updates that are in scope — a topic brief that quietly drew
+    on the rest of the project would be worse than no topic at all.
+    """
+    pid = _int(b.get("project_id"), "project")
+    p = store.project(pid)
+    raw = b.get("topic_id")
+    tid = None if raw in (None, "", 0, "0") else _int(raw, "topic")
+    label = p["name"]
+    updates = p["updates"]
+    if tid is not None:
+        topic = next((t for t in p["topics"] if t["id"] == tid), None)
+        if not topic:
+            raise ValueError("no such topic")
+        label = f"{p['name']} — {topic['name']}"
+        updates = [u for u in updates if u["topic_id"] == tid]
+    return p, tid, label, list(reversed(updates))
+
+
 def post_summarize(b):
-    """Rebuild the brief from every update on the project.
+    """Rebuild the brief for one scope.
 
     The Claude call happens with no transaction open — it takes seconds, and
     holding a write lock across it would block every other tab.
     """
-    pid = _int(b.get("project_id"), "project")
-    p = store.project(pid)
-    if not p["updates"]:
-        raise ValueError("nothing to summarise yet — add an update first")
+    p, tid, label, updates = _scope(b)
+    if not updates:
+        raise ValueError("nothing to summarise here yet — add an update first")
     with _AI_LOCK:
-        body = ai.summarize(p["name"], list(reversed(p["updates"])))
-    return store.save_summary(pid, body, p["updates"][0]["id"])
+        body = ai.summarize(label, updates)
+    return store.save_summary(p["id"], body, updates[-1]["id"], tid)
 
 
 def post_ask(b):
-    pid = _int(b.get("project_id"), "project")
     question = (b.get("question") or "").strip()
     if not question:
         raise ValueError("ask something")
-    p = store.project(pid)
-    if not p["updates"]:
-        raise ValueError("no updates on this project yet")
+    p, tid, label, updates = _scope(b)
+    if not updates:
+        raise ValueError("no updates in scope yet")
     with _AI_LOCK:
-        answer = ai.ask(p["name"], list(reversed(p["updates"])), question)
-    return store.save_answer(pid, question, answer)
+        answer = ai.ask(label, updates, question)
+    return store.save_answer(p["id"], question, answer, tid)
 
 
 READS = {"/api/projects": api_projects, "/api/project": api_project}
@@ -105,7 +143,11 @@ WRITES = {
     "/api/project/new": post_project,
     "/api/project/rename": post_rename,
     "/api/project/delete": post_delete_project,
+    "/api/topic/new": post_topic,
+    "/api/topic/rename": post_rename_topic,
+    "/api/topic/delete": post_delete_topic,
     "/api/update": post_update,
+    "/api/update/move": post_move_update,
     "/api/update/delete": post_delete_update,
     "/api/answer/delete": post_delete_answer,
     "/api/summarize": post_summarize,

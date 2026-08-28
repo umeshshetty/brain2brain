@@ -12,7 +12,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. four tables
+store.py      SQLite. five tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -48,6 +48,47 @@ on every summary, no CLAUDE.md picked up from whatever directory it runs in).
 
 `BRAIN_MODEL` pins a model. `BRAIN_AI_TIMEOUT` is the ceiling, default 180s.
 
+## Topics
+
+**User request, 2026-08-28.** A project accumulates several threads at once —
+hiring, reviews, a migration — and one brief across all of them is a brief about
+nothing in particular.
+
+A topic is a folder inside a project. Scope lives in the URL, so it is a link
+you can keep: `#/p/3` is the whole project, `#/p/3/t/7` one topic, and
+`#/p/3/unfiled` what has not been sorted yet.
+
+**A topic is a scope, not just a filter.** Summary and Ask run against the
+updates in scope and nothing else, and each scope has its own cached summary and
+its own answers. A topic brief that quietly drew on the rest of the project
+would be worse than no topic at all — verified: a Hiring-scoped brief does not
+mention the calibration date filed under Reviews.
+
+Staleness is per-scope too. Filing an update under Reviews leaves the Hiring
+brief fresh, because the Hiring brief is not out of date. `summaries` is unique
+on `(project_id, IFNULL(topic_id, 0))` — **not** a primary key, because SQLite
+permits NULLs in primary key columns and every whole-project row would collide.
+
+| | |
+|---|---|
+| **Optional** | `updates.topic_id` is nullable. A project with no topics behaves exactly as it did before, and the UI shows no filing controls at all. |
+| **Flat** | Topics do not nest. A project, a topic, an update — three levels is the whole model, and the second one that asks for a tree is the one to argue with. |
+| **Unfiled** | A filing view, not a subject. Summary and Ask are deliberately **not** offered on it: a brief about "whatever is unsorted" changes meaning every time you file something. |
+| **Re-filing** | Changes `topic_id` and nothing else. The raw text is never touched. |
+
+**Deleting a topic must never delete updates.** `updates.topic_id` is
+`ON DELETE SET NULL`, not `CASCADE` — the updates fall back to Unfiled and only
+the topic and its cached summary go. Deleting a topic is a filing decision;
+losing raw text over a filing decision would break the one rule. The confirm
+dialog says so, and a store test asserts the count is unchanged.
+
+`store.init()` runs `PRELUDE` (projects + topics), then the migration, then
+`SCHEMA`. That order is not cosmetic: with `PRAGMA foreign_keys=ON`, adding a
+column that references `topics` fails if `topics` does not exist yet. The
+migration uses individual `execute()` calls — `executescript()` COMMITs any open
+transaction before it runs, which would silently break the `with conn:` block
+around it and leave a half-migrated store.
+
 ## Summaries go stale, visibly
 
 A summary records `through_update_id` — the newest update it was built from. Add
@@ -70,7 +111,7 @@ second.
 ## Deleting
 
 Deleting a project deletes its updates, and there is no undo — the page makes
-you type the name. Deleting an update or an answer is one click, because an
+you type the name. Deleting a topic keeps its updates (see *Topics*). Deleting an update or an answer is one click, because an
 answer is regenerable and a mis-typed update is noise.
 
 ## History
