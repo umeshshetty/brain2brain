@@ -469,6 +469,14 @@ This does not reverse *Nothing is filed on a person automatically*. Reading
 across pages to write a disposable brief and filing something on someone's page
 are different acts, and only the second one is destructive to get wrong.
 
+**Renaming the page moves what *elsewhere* can reach, so the brief goes.**
+The match is on the page's current name, so a rename silently changes the
+answer in both directions — updates saying the old name stop being found,
+updates saying the new one start. That is the invisible kind of staleness
+again: a brief written under the old name reads perfectly well. So renaming
+drops the prep and the toast says which name it had been reading the store as.
+Summaries and the pane stay, because neither has ever matched on a name.
+
 A 1-1 brief and a project brief ask for different sections — *Since you last
 spoke · Where things stand · Open between you · They keep raising · Worth
 asking* against *Since last time · Where it stands · Decisions needed · Open ·

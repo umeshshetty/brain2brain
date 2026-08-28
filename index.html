@@ -405,7 +405,7 @@ let editAbout = false, aboutDraft = null;
 // Search is transient — a question you are asking right now, not a place you
 // keep — so it lives here rather than in the URL, and survives the pane
 // re-rendering underneath it. seq drops answers that arrive out of order.
-let searchQ = "", searchRes = null, searchSeq = 0;
+let searchQ = "", searchRes = null, searchSeq = 0, searchTimer = null;
 
 /* One row of either pane.
  *
@@ -647,7 +647,10 @@ async function home(kind) {
                 into it, and ask Claude what they add up to.` };
 
   app.className = "wrap two";
-  const right = `
+  // A function, not a string. Opening an item's form re-renders the whole
+  // shell, and a string built once carries whatever was in the search box at
+  // the time — putting a stale word back under live results.
+  const right = () => `
     <div>
       <div class="head"><h1>Brain</h1></div>
       <input type="text" id="q" class="search" autocomplete="off" spellcheck="false"
@@ -673,10 +676,10 @@ async function home(kind) {
         : `<div class="empty">${W.empty}</div>`}
       </div>
     </div>`;
-  app.innerHTML = nowPane(ag, byId, projects) + right;
+  app.innerHTML = nowPane(ag, byId, projects) + right();
 
   // ---- act on an item: every action writes an update, nothing sets a status
-  const rerender = () => { app.innerHTML = nowPane(ag, byId, projects) + right; wire(); };
+  const rerender = () => { app.innerHTML = nowPane(ag, byId, projects) + right(); wire(); };
 
   app.onclick = async e => {
     const more = e.target.closest("[data-more]");
@@ -731,18 +734,28 @@ async function home(kind) {
   function wire() {
     $("#newbtn").onclick = add;
     $("#newname").onkeydown = e => { if (e.key === "Enter") add(); };
-    $("#q").oninput = async e => {
+    $("#q").oninput = e => {
       searchQ = e.target.value;
       const q = searchQ.trim();
+      clearTimeout(searchTimer);
       if (q.length < 2) { searchRes = null; return drawSearch(); }
+      // A store-wide LIKE per keystroke is one per letter of a word you are
+      // still in the middle of typing. The wait is short enough that a search
+      // still feels live; seq below keeps owning the ordering, because a
+      // debounce narrows the race and does not close it.
       const seq = ++searchSeq;
-      const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
-      if (seq !== searchSeq) return;   // a newer keystroke owns the screen
-      searchRes = r;
-      drawSearch();
+      searchTimer = setTimeout(async () => {
+        const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
+        if (seq !== searchSeq) return;   // a newer keystroke owns the screen
+        searchRes = r;
+        drawSearch();
+      }, 150);
     };
     $("#q").onkeydown = e => {
-      if (e.key === "Escape") { searchQ = ""; e.target.value = ""; searchRes = null; drawSearch(); }
+      if (e.key === "Escape") {
+        clearTimeout(searchTimer); ++searchSeq;
+        searchQ = ""; e.target.value = ""; searchRes = null; drawSearch();
+      }
     };
     drawSearch();
     $("#nowbtn").onclick = e => busy(e.target, "Reading", async () => {
@@ -1129,8 +1142,17 @@ async function projectPage(id, scope) {
     $("#rename").onclick = async () => {
       const name = prompt(person ? "Rename person" : "Rename project", p.name);
       if (!name || name.trim() === p.name) return;
-      try { await api("/api/project/rename", { id: p.id, name }); await reload(); }
-      catch (e) { toast(e.message, true); }
+      try {
+        const r = await api("/api/project/rename", { id: p.id, name });
+        await reload();
+        // Prep is the only brief that finds work on other pages, and it finds
+        // it by this page's name. Renaming moves that match underneath it, and
+        // a brief written under the old name still reads perfectly well — so
+        // it is dropped, and that is said out loud rather than left to notice.
+        toast(r.cleared.length
+          ? `Renamed · the meeting brief read the store as “${r.was}” and has been cleared`
+          : "Renamed");
+      } catch (e) { toast(e.message, true); }
     };
     $("#delproj").onclick = async () => {
       // The updates go with it and there is no undo, so the name has to be typed.

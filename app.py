@@ -200,6 +200,53 @@ def _logged(action: str, item: dict, note: str, date: str) -> str:
     return head + ("\n" + note if note else "")
 
 
+def _act_request(pane, b):
+    """The half of acting that both panes do identically.
+
+    Returns the pane's items, the one being acted on, and the checked action.
+    Kept in one place because the two act routes differ in exactly one thing —
+    whether the target page has to be picked — and everything else drifting
+    apart would mean the cross-project pane and a page's own pane could come to
+    disagree about what a valid action is.
+
+    Items are addressed by position, so the client sends back the stamp of the
+    pane it rendered. A rebuild in another tab reshuffles the array, and acting
+    on index 2 of a list you cannot see is how you file a note against the
+    wrong project.
+    """
+    if not pane.get("built"):
+        raise ValueError("nothing to act on yet")
+    if b.get("built") != pane["created_at"]:
+        raise ValueError("this pane was rebuilt — reload and try again")
+
+    items = pane["items"]
+    i = _int(b.get("index"), "item")
+    if not 0 <= i < len(items):
+        raise ValueError("no such item")
+
+    action = (b.get("action") or "").strip()
+    if action not in ("done", "note", "date"):
+        raise ValueError("bad action")
+    note = (b.get("note") or "").strip()[:4000]
+    date = (b.get("date") or "").strip()
+    if action == "date" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise ValueError("a date looks like 2026-09-04")
+    if action == "note" and not note:
+        raise ValueError("write something")
+    return items, items[i], action, note, date
+
+
+def _act_mark(item, action, date):
+    """Mark the cached item so the pane does not lie between acting and
+    rebuilding. Derived state on derived state: it evaporates the next time
+    the pane reads the raw log, which is where the truth actually is."""
+    if action == "done":
+        item["done"] = True
+    elif action == "date":
+        item["date"] = date
+    item["logged"] = int(item.get("logged") or 0) + 1
+
+
 def post_agenda_act(b):
     """Act on one item in the pane: log a note, mark it done, move its date.
 
@@ -209,33 +256,11 @@ def post_agenda_act(b):
     done, not because a flag was flipped. That keeps the raw text the single
     source of truth and means Ask and the briefs see what you did for free.
     """
-    ag = store.agenda()
-    if not ag.get("built"):
-        raise ValueError("nothing to act on yet")
-    # The client sends back the stamp of the pane it was looking at. Items are
-    # addressed by position, and a rebuild in another tab reshuffles them.
-    if b.get("built") != ag["created_at"]:
-        raise ValueError("this pane was rebuilt — reload and try again")
+    items, item, action, note, date = _act_request(store.agenda(), b)
 
-    items = ag["items"]
-    i = _int(b.get("index"), "item")
-    if not 0 <= i < len(items):
-        raise ValueError("no such item")
-    item = items[i]
-
-    action = (b.get("action") or "").strip()
-    if action not in ("done", "note", "date"):
-        raise ValueError("bad action")
-    note = (b.get("note") or "").strip()[:4000]
-    date = (b.get("date") or "").strip()
-    if action == "date":
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            raise ValueError("a date looks like 2026-09-04")
-    if action == "note" and not note:
-        raise ValueError("write something")
-
-    # An item Claude could not tie to anything has nowhere to be logged, so the
-    # page offers a picker; either way the target is checked before we write.
+    # The one thing this pane does that a page's own pane does not: an item
+    # Claude could not tie to anything has nowhere to be logged, so the page
+    # offers a picker. Either way the target is checked before we write.
     pid = b.get("project_id") or item.get("project_id")
     if not pid:
         raise ValueError("pick which project or person this belongs to")
@@ -243,12 +268,7 @@ def post_agenda_act(b):
     target = store.project(pid)
 
     up = store.add_update(pid, _logged(action, item, note, date))
-
-    if action == "done":
-        item["done"] = True
-    elif action == "date":
-        item["date"] = date
-    item["logged"] = int(item.get("logged") or 0) + 1
+    _act_mark(item, action, date)
     out = store.agenda_items(items)
     out["logged_to"] = {"id": pid, "name": target["name"], "update_id": up["id"]}
     return out
@@ -282,34 +302,10 @@ def post_page_act(b):
     page's updates, so this page is where what you did belongs.
     """
     pid = _int(b.get("project_id"), "project")
-    pane = store.page_agenda(pid)
-    if not pane.get("built"):
-        raise ValueError("nothing to act on yet")
-    if b.get("built") != pane["created_at"]:
-        raise ValueError("this pane was rebuilt — reload and try again")
-
-    items = pane["items"]
-    i = _int(b.get("index"), "item")
-    if not 0 <= i < len(items):
-        raise ValueError("no such item")
-    item = items[i]
-
-    action = (b.get("action") or "").strip()
-    if action not in ("done", "note", "date"):
-        raise ValueError("bad action")
-    note = (b.get("note") or "").strip()[:4000]
-    date = (b.get("date") or "").strip()
-    if action == "date" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-        raise ValueError("a date looks like 2026-09-04")
-    if action == "note" and not note:
-        raise ValueError("write something")
+    items, item, action, note, date = _act_request(store.page_agenda(pid), b)
 
     up = store.add_update(pid, _logged(action, item, note, date))
-    if action == "done":
-        item["done"] = True
-    elif action == "date":
-        item["date"] = date
-    item["logged"] = int(item.get("logged") or 0) + 1
+    _act_mark(item, action, date)
     out = store.page_agenda_items(pid, items)
     out["logged_to"] = {"id": pid, "update_id": up["id"]}
     return out

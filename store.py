@@ -335,17 +335,34 @@ def create_project(name: str, kind=None) -> dict:
 
 
 def rename_project(pid: int, name: str) -> dict:
+    """Rename a page, and drop the one brief that was built on its old name.
+
+    Prep is the only thing here that reaches across pages, and it finds what it
+    reaches by a whole-word match on this page's name (see `prep_context`).
+    Rename the page and that match moves underneath it: an update elsewhere
+    saying the old name stops being found, one saying the new name starts. The
+    cached brief was written from the old reading of the store.
+
+    That is the same invisible staleness a changed profile causes — a brief
+    written against a name nobody uses any more still reads perfectly well — so
+    it gets the same treatment: dropped, not flagged, and the page says so.
+    Summaries and the pane stay: neither has ever matched on a name, and both
+    are about updates that did not move.
+    """
     name = name.strip()
     if not name:
         raise ValueError("a project needs a name")
     conn = connect()
     try:
-        with conn:
-            n = conn.execute("UPDATE projects SET name = ? WHERE id = ?",
-                             (name, pid)).rowcount
-        if not n:
+        row = conn.execute("SELECT name FROM projects WHERE id = ?", (pid,)).fetchone()
+        if not row:
             raise ValueError("no such project")
-        return {"id": pid, "name": name}
+        if row["name"] == name:
+            return {"id": pid, "name": name, "was": name, "cleared": []}
+        with conn:
+            conn.execute("UPDATE projects SET name = ? WHERE id = ?", (name, pid))
+            conn.execute("DELETE FROM preps WHERE project_id = ?", (pid,))
+        return {"id": pid, "name": name, "was": row["name"], "cleared": ["preps"]}
     except sqlite3.IntegrityError:
         raise ValueError(f"there is already a project called {name!r}")
     finally:
