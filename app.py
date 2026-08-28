@@ -9,6 +9,7 @@ page you have open in another tab cannot post into your store.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -34,6 +35,44 @@ CATCHUP = "0" if os.environ.get("BRAIN_NO_CATCHUP") else "1"
 # `claude -p` takes seconds and costs tokens. One at a time keeps a stray
 # double-click from launching two identical summaries of the same project.
 _AI_LOCK = threading.Lock()
+_AI_NOW = None        # what is holding it, in words
+_AI_WAITING = 0       # how many are queued behind it
+
+
+@contextlib.contextmanager
+def _ai(what: str):
+    """One `claude -p` at a time, and a name for whoever ends up behind it.
+
+    The lock is right; what it could not do was explain itself. A call that
+    arrives while it is held simply takes twice as long, and a spinner meaning
+    "Claude is thinking" is indistinguishable from a spinner meaning "queued
+    behind the pane another tab is rebuilding" — only one of which is anything
+    you did. So the holder writes down what it is and how many are waiting, and
+    /api/busy answers. Cheap: two module variables and a read.
+
+    The names here are shown to the reader, and the page compares its own
+    against them so it never reports itself as the thing it is waiting for —
+    keep the two in step (see AI_LABEL in index.html).
+    """
+    global _AI_NOW, _AI_WAITING
+    if not _AI_LOCK.acquire(blocking=False):
+        _AI_WAITING += 1
+        try:
+            _AI_LOCK.acquire()
+        finally:
+            _AI_WAITING -= 1
+    _AI_NOW = what
+    try:
+        yield
+    finally:
+        _AI_NOW = None
+        _AI_LOCK.release()
+
+
+def api_busy(q):
+    """What Claude is doing right now, for a button that would otherwise just
+    spin. A read with no store behind it at all."""
+    return {"busy": _AI_NOW, "queued": _AI_WAITING}
 
 
 def _int(v, what="id") -> int:
@@ -152,7 +191,7 @@ def post_summarize(b):
     p, tid, label, updates, kind = _scope(b)
     if not updates:
         raise ValueError("nothing to summarise here yet — add an update first")
-    with _AI_LOCK:
+    with _ai(f"a brief on {label}"):
         body = ai.summarize(label, updates, kind, p.get("about"),
                             p.get("guidance"))
     return store.save_summary(p["id"], body, max(u["id"] for u in updates),
@@ -166,7 +205,7 @@ def post_ask(b):
     p, tid, label, updates, kind = _scope(b)
     if not updates:
         raise ValueError("no updates in scope yet")
-    with _AI_LOCK:
+    with _ai(f"a question about {label}"):
         answer = ai.ask(label, updates, question, kind, p.get("about"))
     return store.save_answer(p["id"], question, answer, tid)
 
@@ -191,7 +230,7 @@ def post_agenda(b):
     if not ctx["total"]:
         raise ValueError("nothing to read yet — add an update to a project first")
     day = store.today()
-    with _AI_LOCK:
+    with _ai("the Now pane"):
         items = ai.agenda(day, ctx["projects"])
     return store.save_agenda(items, ctx["newest"], day, ctx["total"])
 
@@ -294,7 +333,7 @@ def post_page_agenda(b):
     if not ctx["updates"]:
         raise ValueError("nothing to read here yet — add an update first")
     day = store.today()
-    with _AI_LOCK:
+    with _ai(f"{ctx['name']}'s dates"):
         items = ai.page_agenda(day, ctx["name"], ctx["kind"], ctx["updates"],
                                ctx["about"])
     return store.save_page_agenda(ctx["id"], items, ctx["newest"], day, ctx["total"])
@@ -349,7 +388,7 @@ def post_about_draft(b):
     ctx = store.page_agenda_context(_int(b.get("project_id"), "project"))
     if not ctx["updates"]:
         raise ValueError("nothing to read here yet — add an update first")
-    with _AI_LOCK:
+    with _ai(f"a profile for {ctx['name']}"):
         return {"about": ai.draft_about(ctx["name"], ctx["kind"], ctx["updates"])}
 
 
@@ -367,7 +406,7 @@ def post_prep(b):
     ctx = store.prep_context(pid, since)
     if not ctx["total"]:
         raise ValueError("nothing to read yet — add an update first")
-    with _AI_LOCK:
+    with _ai(f"the {ctx['name']} meeting brief"):
         body = ai.prep(ctx["name"], ctx["kind"], ctx["updates"], since,
                        ctx["about"], ctx["guidance"])
     out = store.save_prep(pid, body, since, ctx["newest"], ctx["total"])
@@ -378,7 +417,8 @@ def post_prep(b):
 READS = {"/api/projects": api_projects,
          "/api/project": api_project,
          "/api/agenda": api_agenda,
-         "/api/search": api_search}
+         "/api/search": api_search,
+         "/api/busy": api_busy}
 WRITES = {
     "/api/project/new": post_project,
     "/api/project/rename": post_rename,

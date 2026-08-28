@@ -339,15 +339,45 @@ const ago = iso => {
        : days < 30 ? `${days} days ago` : `${Math.floor(days / 30)} months ago`;
 };
 
+/* What each Claude call calls itself, for a button that would otherwise only
+   spin. These must read the same on both sides — the server writes them (see
+   _ai in app.py) and the page compares its own against what comes back, so
+   that a call never reports itself as the thing it is waiting for. */
+const AI_LABEL = {
+  now:    () => "the Now pane",
+  dates:  p  => `${p.name}'s dates`,
+  brief:  l  => `a brief on ${l}`,
+  ask:    l  => `a question about ${l}`,
+  prep:   p  => `the ${p.name} meeting brief`,
+  draft:  p  => `a profile for ${p.name}`,
+};
+
 /* Run an async action with the button showing it is working. Every Claude call
    goes through here: they take 5-20 seconds and a dead-looking button is the
-   fastest way to make someone click it twice. */
-async function busy(btn, label, fn) {
+   fastest way to make someone click it twice.
+
+   `mine` is what this call is, when it is a Claude call. One at a time is
+   served, so a second one waits — and a spinner that means "thinking" looks
+   exactly like a spinner that means "queued behind a pane another tab is
+   rebuilding", though only one of those is anything you did. Nothing is asked
+   until the call has already outlasted everything that is not Claude. */
+async function busy(btn, label, fn, mine) {
   const was = btn.textContent;
   btn.disabled = true; btn.textContent = label; btn.classList.add("spin");
+  let poll = mine ? setTimeout(async function look() {
+    try {
+      const b = await api("/api/busy");
+      // Only when something else holds it. Our own name coming back means the
+      // wait is Claude thinking about what we asked, which the spinner says.
+      btn.textContent = b.busy && b.busy !== mine
+        ? `${label} · behind ${b.busy}` : label;
+    } catch (_) { /* a failed poll is not worth a word; the call still runs */ }
+    poll = setTimeout(look, 2500);
+  }, 1500) : null;
   try { return await fn(); }
   catch (e) { toast(e.message, true); }
-  finally { btn.disabled = false; btn.textContent = was; btn.classList.remove("spin"); }
+  finally { clearTimeout(poll); btn.disabled = false; btn.textContent = was;
+            btn.classList.remove("spin"); }
 }
 
 /* Names of other projects and people that literally appear in the text. Not an
@@ -785,7 +815,7 @@ async function home(kind) {
       await api("/api/agenda/refresh", {});
       await route();
       toast("Now updated");
-    });
+    }, AI_LABEL.now());
     if ($("#actnote")) $("#actnote").focus();
   }
   wire();
@@ -1178,7 +1208,7 @@ async function projectPage(id, scope) {
       await api("/api/summarize", { project_id: p.id, topic_id: tid });
       await reload();
       toast("Summary updated");
-    });
+    }, AI_LABEL.brief(tid ? `${p.name} — ${scopeName}` : p.name));
     const ask = async () => {
       const question = $("#q").value.trim();
       if (!question) return $("#q").focus();
@@ -1186,7 +1216,7 @@ async function projectPage(id, scope) {
         await api("/api/ask", { project_id: p.id, topic_id: tid, question });
         $("#q").value = "";
         await reload();
-      });
+      }, AI_LABEL.ask(tid ? `${p.name} — ${scopeName}` : p.name));
     };
     if ($("#askbtn")) {
       $("#askbtn").onclick = ask;
@@ -1254,7 +1284,7 @@ async function projectPage(id, scope) {
         aboutDraft = r.about;
         rerender();
         toast("Draft — edit it, then Save");
-      });
+      }, AI_LABEL.draft(p));
     if ($("#aboutsave")) $("#aboutsave").onclick = e => {
       // Read both boxes before the await: reload() replaces the DOM.
       const about = $("#abouttext").value, guidance = $("#wantstext").value;
@@ -1279,7 +1309,7 @@ async function projectPage(id, scope) {
                                  since: $("#prepsince") ? $("#prepsince").value : "" });
         await reload();
         toast("Prep ready");
-      });
+      }, AI_LABEL.prep(p));
 
     // ---- build this page's own pane
     if ($("#panebtn")) $("#panebtn").onclick = e =>
@@ -1288,7 +1318,7 @@ async function projectPage(id, scope) {
         await api("/api/page/refresh", { project_id: p.id });
         await reload();
         toast("Dates updated");
-      });
+      }, AI_LABEL.dates(p));
     if ($("#actnote")) $("#actnote").focus();
   }
   wire();

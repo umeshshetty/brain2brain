@@ -59,7 +59,27 @@ halves of that are unacceptable. A brief must say only what the updates say, and
 nothing you keep elsewhere should surface in something you paste into a meeting.
 A `TemporaryDirectory` per call, so nothing accumulates across runs either.
 
+**One call at a time, and it says whose.** `_ai()` serialises every `claude -p`
+— a stray double-click must not launch two identical summaries — but a lock
+cannot explain itself. *Review finding, 2026-08-28: a call that arrives while
+it is held simply takes twice as long, and a spinner meaning "Claude is
+thinking" is indistinguishable from a spinner meaning "queued behind the pane
+another tab is rebuilding", though only one of those is anything you did.*
+
+So the holder writes down what it is — *the Now pane*, *a brief on GoBMP —
+Hiring*, *the Priya meeting brief* — and `/api/busy` answers with that and the
+number queued. A button that has been working for 1.5s starts asking, and reads
+*"Reading · behind the Now pane"* until the slot frees. Two module variables
+and a read with no store behind it.
+
+**A call never reports itself.** The page compares the name that comes back
+against its own: our own name means Claude is thinking about what we asked,
+which the spinner already says. That is why `AI_LABEL` in `index.html` and
+`_ai()` in `app.py` have to say the same words, and a test asserts they do —
+including the em dash in a topic scope.
+
 `BRAIN_MODEL` pins a model. `BRAIN_AI_TIMEOUT` is the ceiling, default 180s.
+`BRAIN_NO_CATCHUP=1` refuses the one unasked call (see *Now*).
 
 ## People
 
