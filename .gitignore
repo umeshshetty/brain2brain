@@ -8,3 +8,4 @@ __pycache__/
 # Never. A token in the history is a leaked token even after you delete it.
 .env
 .env.*
+.brain.log
