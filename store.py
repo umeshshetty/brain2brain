@@ -634,3 +634,23 @@ def save_agenda(items: list, through: int, for_date: str, read: int) -> dict:
     finally:
         conn.close()
     return agenda()
+
+
+def agenda_items(items: list) -> dict:
+    """Rewrite the cached items and nothing else.
+
+    Deliberately leaves `through_update_id`, `read_updates` and `for_date`
+    alone. Acting on an item writes an update, so the pane should go visibly
+    behind the moment you act — that is the honest state. It is showing you a
+    list built before the thing you just did.
+    """
+    conn = connect()
+    try:
+        with conn:
+            n = conn.execute("UPDATE agenda SET body = ? WHERE id = 1",
+                             (json.dumps(items),)).rowcount
+        if not n:
+            raise ValueError("no agenda to act on")
+    finally:
+        conn.close()
+    return agenda()

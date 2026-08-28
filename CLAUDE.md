@@ -183,6 +183,49 @@ reads as *"there was nothing else"*, which is the one thing it must not do.
 project, and a cross-project list there is one more thing to read past. That is
 a judgement call, and one line of CSS to reverse.
 
+## Acting on an item
+
+**User request, 2026-08-28.** *"I must have a way to action or write notes
+against them which will go to the notes as well of the project so everything is
+logged in the main project. Also way to mark them done or change due date etc.
+That too should go to the project logs on what I did so any questions must be
+answered with all data."*
+
+Every item in the pane carries **done · note · date**. All three do the same
+thing: **they write an update into the project or person the item belongs to.**
+That update is the entire record.
+
+```
+Done — Send the UxM update to the steering group
+Sent it at 09:40. Anita asked for the error-budget chart next time.
+```
+
+**Nothing is marked done anywhere.** There is no status column, no `done` flag
+on an update, no separate list of completed things. The item stops appearing
+because the next agenda reads a log that says it is finished — the prompt
+already refuses to carry an item forward when a later update closes it, and
+that is now the only mechanism. Verified: mark it done, rebuild, it is gone.
+
+That is what makes the request's last clause true. *"Any questions must be
+answered with all data"* holds for free, because what you did is raw text in
+the project like everything else — Ask answered *"Did the UxM update go out,
+and did anyone ask for anything?"* with the time it was sent and Anita's
+request, quoting the update the **done** button wrote.
+
+The head line is composed rather than free-typed, because a bare *"sent it"*
+under a project tells you nothing a month later. The item's own words are
+quoted back into it — they came out of your updates in the first place.
+
+| | |
+|---|---|
+| **Acting stales the pane** | `agenda_items()` rewrites the cached items and deliberately leaves `through_update_id` and `read_updates` alone. You just wrote an update; the list on screen was built before it, and it should say so. |
+| **`done` lives in the cache** | The strike-through is on the cached item so the pane does not lie between acting and rebuilding. It is derived state on derived state, and it evaporates on the next read of the raw log. |
+| **Items are addressed by position** | So the client sends back the `created_at` of the pane it was looking at. A rebuild in another tab reshuffles the array, and acting on index 2 of a list you cannot see is how you file a note against the wrong project. |
+| **Unplaced items refuse to guess** | An item Claude could not tie to anything has nowhere to be logged, so the form makes you choose. Silently picking a project would put words in its log. |
+
+A moved date logs to a **person** just as readily as to a project — the target
+is whatever the item points at.
+
 ## Summaries go stale, visibly
 
 A summary records `through_update_id` — the newest update it was built from. Add

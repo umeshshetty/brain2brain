@@ -11,6 +11,7 @@ page you have open in another tab cannot post into your store.
 import argparse
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -161,6 +162,71 @@ def post_agenda(b):
     return store.save_agenda(items, ctx["newest"], day, ctx["total"])
 
 
+# What an action writes into the log. Composed rather than free-typed so a
+# month later the log still says which item it was about — a bare "sent it"
+# under a project tells you nothing. The item's own words are quoted back
+# because they came from your updates in the first place.
+def _logged(action: str, item: dict, note: str, date: str) -> str:
+    head = {"done": f"Done — {item['text']}",
+            "date": f"Due date moved to {date} — {item['text']}",
+            "note": f"Re: {item['text']}"}[action]
+    return head + ("\n" + note if note else "")
+
+
+def post_agenda_act(b):
+    """Act on one item in the pane: log a note, mark it done, move its date.
+
+    Every one of these writes an update into the project or person it belongs
+    to, and that update is the only record. Nothing here sets a status: the
+    item stops appearing because the next agenda reads a log that says it is
+    done, not because a flag was flipped. That keeps the raw text the single
+    source of truth and means Ask and the briefs see what you did for free.
+    """
+    ag = store.agenda()
+    if not ag.get("built"):
+        raise ValueError("nothing to act on yet")
+    # The client sends back the stamp of the pane it was looking at. Items are
+    # addressed by position, and a rebuild in another tab reshuffles them.
+    if b.get("built") != ag["created_at"]:
+        raise ValueError("this pane was rebuilt — reload and try again")
+
+    items = ag["items"]
+    i = _int(b.get("index"), "item")
+    if not 0 <= i < len(items):
+        raise ValueError("no such item")
+    item = items[i]
+
+    action = (b.get("action") or "").strip()
+    if action not in ("done", "note", "date"):
+        raise ValueError("bad action")
+    note = (b.get("note") or "").strip()[:4000]
+    date = (b.get("date") or "").strip()
+    if action == "date":
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise ValueError("a date looks like 2026-09-04")
+    if action == "note" and not note:
+        raise ValueError("write something")
+
+    # An item Claude could not tie to anything has nowhere to be logged, so the
+    # page offers a picker; either way the target is checked before we write.
+    pid = b.get("project_id") or item.get("project_id")
+    if not pid:
+        raise ValueError("pick which project or person this belongs to")
+    pid = _int(pid, "project")
+    target = store.project(pid)
+
+    up = store.add_update(pid, _logged(action, item, note, date))
+
+    if action == "done":
+        item["done"] = True
+    elif action == "date":
+        item["date"] = date
+    item["logged"] = int(item.get("logged") or 0) + 1
+    out = store.agenda_items(items)
+    out["logged_to"] = {"id": pid, "name": target["name"], "update_id": up["id"]}
+    return out
+
+
 READS = {"/api/projects": api_projects,
          "/api/project": api_project,
          "/api/agenda": api_agenda}
@@ -176,6 +242,7 @@ WRITES = {
     "/api/update/delete": post_delete_update,
     "/api/answer/delete": post_delete_answer,
     "/api/agenda/refresh": post_agenda,
+    "/api/agenda/act": post_agenda_act,
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,
 }
