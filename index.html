@@ -55,6 +55,45 @@
           padding:16px 18px; margin-bottom:14px; }
   .sec { margin:30px 0 0; }
 
+  /* Two panes on the home view only: what needs attention on the left,
+     projects on the right. A project page goes back to one column — you are
+     inside one thing there, and a cross-project pane is just something else
+     to read. Below 900px the panes stack, Now first. */
+  .wrap.two { max-width:1180px; display:grid; gap:32px;
+              grid-template-columns:352px minmax(0,1fr); align-items:start; }
+  @media (max-width:900px) { .wrap.two { grid-template-columns:1fr; gap:24px; } }
+
+  /* the Now pane */
+  .now { position:sticky; top:28px; }
+  @media (max-width:900px) { .now { position:static; } }
+  .now .head { margin-bottom:12px; }
+  .now h1 { font-size:15px; letter-spacing:.04em; text-transform:uppercase;
+            color:var(--dim); font-weight:600; }
+  .grp { display:flex; align-items:center; gap:8px; margin:18px 0 8px; }
+  .grp:first-of-type { margin-top:4px; }
+  .grp .lbl { font-size:11px; font-weight:700; letter-spacing:.07em;
+              text-transform:uppercase; color:var(--dim); }
+  .grp .rule { flex:1; height:1px; background:var(--line); }
+  .grp.overdue .lbl, .grp.today .lbl { color:var(--warn); }
+  .grp.today .lbl { color:var(--accent); }
+
+  .item { display:block; text-decoration:none; color:inherit; background:var(--card);
+          border:1px solid var(--line); border-left:3px solid var(--line);
+          border-radius:9px; padding:10px 13px; margin-bottom:8px;
+          transition:border-color .12s, transform .12s; }
+  .item:hover { border-color:var(--accent); transform:translateX(1px); }
+  .item.overdue { border-left-color:var(--warn); }
+  .item.today { border-left-color:var(--accent); }
+  .item .txt { font-weight:550; line-height:1.4; }
+  .item .src { color:var(--dim); font-size:12px; margin-top:5px;
+               display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; }
+  .item .proj { color:var(--ink); background:var(--bg); border:1px solid var(--line);
+                border-radius:5px; padding:0 6px; white-space:nowrap; }
+  .item .q { font-style:italic; overflow:hidden; text-overflow:ellipsis;
+             white-space:nowrap; max-width:100%; }
+  .item .day { margin-left:auto; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .now .foot { color:var(--dim); font-size:12px; margin-top:16px; line-height:1.5; }
+
   /* project list */
   .plist { display:grid; gap:10px; }
   .pcard { display:flex; align-items:center; gap:14px; text-decoration:none; color:inherit;
@@ -228,26 +267,121 @@ async function busy(btn, label, fn) {
   finally { btn.disabled = false; btn.textContent = was; btn.classList.remove("spin"); }
 }
 
+/* --------------------------------------------------------------- now ----- */
+/* One pane, every project. What the updates put on a day, sorted by how soon.
+   Derived and cached exactly like a summary: one Claude call, thrown away and
+   rebuilt whenever you ask. */
+
+const GROUPS = [
+  ["overdue",   "Overdue"],
+  ["today",     "Today"],
+  ["this week", "This week"],
+  ["later",     "Later"],
+];
+
+const dayLabel = d => {
+  if (!d) return "";
+  const t = new Date(d + "T00:00:00"), n = new Date();
+  const days = Math.round((t - new Date(n.getFullYear(), n.getMonth(), n.getDate())) / 86400000);
+  return days === 0 ? "today" : days === 1 ? "tomorrow" : days === -1 ? "yesterday"
+       : Math.abs(days) < 7 ? (days < 0 ? `${-days} days ago` : `in ${days} days`)
+       : t.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+};
+
+function nowPane(ag, byId) {
+  const items = ag.items || [];
+  const item = it => {
+    const p = it.project_id ? byId[it.project_id] : null;
+    const inner = `
+      <div class="txt">${esc(it.text)}</div>
+      <div class="src">
+        ${p ? `<span class="proj">${esc(p.name)}</span>` : ""}
+        ${it.quote ? `<span class="q">“${esc(it.quote)}”</span>` : ""}
+        ${it.date ? `<span class="day">${esc(dayLabel(it.date))}</span>` : ""}
+      </div>`;
+    // An item Claude could not tie to a project is still worth showing, but it
+    // must not render as a link that goes nowhere.
+    return p ? `<a class="item ${it.when.replace(" ", "")}" href="#/p/${p.id}">${inner}</a>`
+             : `<div class="item ${it.when.replace(" ", "")}">${inner}</div>`;
+  };
+
+  const groups = GROUPS.map(([key, label]) => {
+    const mine = items.filter(i => i.when === key);
+    if (!mine.length) return "";
+    return `<div class="grp ${key.replace(" ", "")}">
+        <span class="lbl">${label}</span><span class="rule"></span>
+        <span class="lbl">${mine.length}</span></div>
+      ${mine.map(item).join("")}`;
+  }).join("");
+
+  const body =
+    !ag.updates ? `<div class="empty">Nothing to read yet. This pane goes
+        through every project's updates and pulls out what is tied to a day —
+        a cutover, a report due, a date you promised someone. Drop an update
+        into a project and press <b>Read all projects</b>.</div>`
+    : !ag.built ? `<div class="empty">Not built yet. Claude will read all
+        ${ag.updates} update${ag.updates === 1 ? "" : "s"} across every project
+        and pull out what is tied to a day.</div>`
+    : items.length ? groups
+    : `<div class="empty">Nothing in any project is tied to a day right now.
+        Dates in your updates — “cutover Nov 3”, “update every Thursday” —
+        turn up here.</div>`;
+
+  return `
+    <aside class="now">
+      <div class="head">
+        <h1>Now</h1>
+        <span class="sp"></span>
+        <button class="link" id="nowbtn">${ag.built ? "refresh" : "Read all projects"}</button>
+      </div>
+      ${ag.stale ? `<div class="stale" style="display:block;margin-bottom:12px">
+        ${ag.behind ? `${ag.behind} new update${ag.behind === 1 ? "" : "s"} since this`
+          : ag.outdated ? `Built for ${esc(ag.for_date)} — the day has turned over`
+          : `The updates behind this have changed`}</div>` : ""}
+      ${body}
+      ${ag.built ? `<div class="foot">Read ${ag.updates}
+        update${ag.updates === 1 ? "" : "s"} · built ${esc(when(ag.created_at))}
+        ${ag.dropped ? `<br>Only the ${ag.per_project} most recent updates per
+          project were read; ${ag.dropped} older one${ag.dropped === 1 ? "" : "s"}
+          were not.` : ""}</div>` : ""}
+    </aside>`;
+}
+
 /* ------------------------------------------------------------- home ----- */
 async function home() {
-  const { projects } = await api("/api/projects");
-  app.innerHTML = `
-    <div class="head"><h1>Brain</h1>
-      <span class="dim">${projects.length} project${projects.length === 1 ? "" : "s"}</span>
-    </div>
-    <div class="card row">
-      <input type="text" id="newname" placeholder="New project name" maxlength="120" autocomplete="off">
-      <button class="go" id="newbtn">Add</button>
-    </div>
-    ${projects.length ? `<div class="plist">` + projects.map(p => `
-      <a class="pcard" href="#/p/${p.id}">
-        <b>${esc(p.name)}</b>
-        <span class="meta">${p.updates} update${p.updates === 1 ? "" : "s"}${
-          p.topics ? ` · ${p.topics} topic${p.topics === 1 ? "" : "s"}` : ""}<br>
-          <span class="dim">${esc(ago(p.last_update_at))}</span></span>
-      </a>`).join("") + `</div>`
-      : `<div class="empty">No projects yet. Name one above — then keep dropping
-         raw updates into it, and ask Claude what they add up to.</div>`}`;
+  // Two reads, one round trip each way. The agenda is its own call so a slow
+  // or empty pane never holds up the list of projects.
+  const [{ projects }, ag] = await Promise.all([
+    api("/api/projects"), api("/api/agenda"),
+  ]);
+  const byId = Object.fromEntries(projects.map(p => [p.id, p]));
+
+  app.className = "wrap two";
+  app.innerHTML = nowPane(ag, byId) + `
+    <div>
+      <div class="head"><h1>Brain</h1>
+        <span class="dim">${projects.length} project${projects.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="card row">
+        <input type="text" id="newname" placeholder="New project name" maxlength="120" autocomplete="off">
+        <button class="go" id="newbtn">Add</button>
+      </div>
+      ${projects.length ? `<div class="plist">` + projects.map(p => `
+        <a class="pcard" href="#/p/${p.id}">
+          <b>${esc(p.name)}</b>
+          <span class="meta">${p.updates} update${p.updates === 1 ? "" : "s"}${
+            p.topics ? ` · ${p.topics} topic${p.topics === 1 ? "" : "s"}` : ""}<br>
+            <span class="dim">${esc(ago(p.last_update_at))}</span></span>
+        </a>`).join("") + `</div>`
+        : `<div class="empty">No projects yet. Name one above — then keep dropping
+           raw updates into it, and ask Claude what they add up to.</div>`}
+    </div>`;
+
+  $("#nowbtn").onclick = e => busy(e.target, "Reading", async () => {
+    await api("/api/agenda/refresh", {});
+    await route();
+    toast("Now updated");
+  });
 
   const add = async () => {
     const name = $("#newname").value.trim();
@@ -266,6 +400,7 @@ async function home() {
 /* Scope is in the URL, so a topic is a link you can keep: #/p/3, #/p/3/t/7,
    #/p/3/unfiled. "" is the whole project. */
 async function projectPage(id, scope) {
+  app.className = "wrap";
   const p = await api(`/api/project?id=${encodeURIComponent(id)}`);
   const topics = p.topics;
   const byId = Object.fromEntries(topics.map(t => [t.id, t]));
@@ -501,7 +636,7 @@ async function projectPage(id, scope) {
 
 /* ----------------------------------------------------------- routing ---- */
 async function route() {
-  app.onclick = null; app.onchange = null;
+  app.onclick = null; app.onchange = null; app.className = "wrap";
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/t\/(\d+)|\/(unfiled))?/);
   try {
     if (m) await projectPage(m[1], m[2] || m[3] || "");

@@ -40,7 +40,7 @@ def _int(v, what="id") -> int:
 
 # ----------------------------------------------------------------- handlers
 
-def api_projects():
+def api_projects(q):
     return {"projects": store.projects()}
 
 
@@ -138,7 +138,28 @@ def post_ask(b):
     return store.save_answer(p["id"], question, answer, tid)
 
 
-READS = {"/api/projects": api_projects, "/api/project": api_project}
+def api_agenda(q):
+    return store.agenda()
+
+
+def post_agenda(b):
+    """Rebuild the cross-project agenda: one Claude call over every project.
+
+    It is built for one specific day and stamped with it, because half of what
+    the pane says is "today" and that stops being true at midnight.
+    """
+    ctx = store.agenda_context()
+    if not ctx["total"]:
+        raise ValueError("nothing to read yet — add an update to a project first")
+    day = store.today()
+    with _AI_LOCK:
+        items = ai.agenda(day, ctx["projects"])
+    return store.save_agenda(items, ctx["newest"], day, ctx["total"])
+
+
+READS = {"/api/projects": api_projects,
+         "/api/project": api_project,
+         "/api/agenda": api_agenda}
 WRITES = {
     "/api/project/new": post_project,
     "/api/project/rename": post_rename,
@@ -150,6 +171,7 @@ WRITES = {
     "/api/update/move": post_move_update,
     "/api/update/delete": post_delete_update,
     "/api/answer/delete": post_delete_answer,
+    "/api/agenda/refresh": post_agenda,
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,
 }
@@ -204,9 +226,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._auth_ok():
             return self._json(403, {"error": "bad token"})
         try:
-            fn = READS[path]
             q = parse_qs(urlparse(self.path).query)
-            return self._json(200, fn(q) if fn is api_project else fn())
+            return self._json(200, READS[path](q))
         except ValueError as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:

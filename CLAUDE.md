@@ -12,7 +12,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. five tables
+store.py      SQLite. six tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -88,6 +88,53 @@ column that references `topics` fails if `topics` does not exist yet. The
 migration uses individual `execute()` calls — `executescript()` COMMITs any open
 transaction before it runs, which would silently break the `with conn:` block
 around it and leave a half-migrated store.
+
+## Now — the left pane
+
+**User request, 2026-08-28.** *"the left side pane should have key and imp
+information, from across different projects. Like today is the day to provide
+update on UxM. Today we migrate to Kafka. Provide update on GNC to Selector."*
+
+Projects moved to the right. The left pane is one cross-project read: every
+project's recent updates go to Claude in a single call, and what comes back is
+the things the updates put on a **day** — a cutover, a report due, a date you
+promised someone — grouped Overdue / Today / This week / Later, each linked to
+the project it came from.
+
+It is derived, cached and disposable like a summary. Nothing is entered here and
+nothing is pinned; the pane is what your raw updates already say, sorted by how
+soon. `DELETE FROM agenda` costs one Claude call.
+
+**It goes stale three ways, and all three are visible.**
+
+| | |
+|---|---|
+| **Behind** | A new update in any project. The familiar `through_update_id` watermark. |
+| **Outdated** | The calendar turned over. An agenda that says *"today"* was true on the morning it was built and is a lie the next morning, so `for_date` is checked exactly as strictly. This is the one a summary does not need. |
+| **Changed** | The updates it read no longer exist — a project or an update was deleted. A newest-id watermark only notices the set *growing*, so `read_updates` records the count as well. |
+
+`agenda` is one row (`CHECK (id = 1)`): unlike a summary it has no scope to key
+on, because reading every project at once is the entire point of it.
+
+**The model answers with the project name, not the id.** It is told to return
+`project_id` and it returns `"Payments"` anyway — reliably, and no amount of
+instruction stops it every time. `ai._items()` resolves either against the
+projects that were actually sent. An item matching neither still renders, but
+unlinked: a dead link is worse than no link, and guessing which project was
+meant would put words in your updates' mouth.
+
+Everything else in `_items()` is the same instinct. A row with no text is
+dropped, an unknown `when` falls back to `later`, the list is capped at 12, and
+prose instead of an array is an `AIError` rather than a half-rendered pane.
+
+Only the **40 most recent updates per project** are read, per project rather
+than overall so one noisy project cannot crowd out the quiet one holding the
+deadline. What that leaves out is printed in the pane — a cap you cannot see
+reads as *"there was nothing else"*, which is the one thing it must not do.
+
+**The pane is on the home view only.** Inside a project you are working on that
+project, and a cross-project list there is one more thing to read past. That is
+a judgement call, and one line of CSS to reverse.
 
 ## Summaries go stale, visibly
 

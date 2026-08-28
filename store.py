@@ -1,4 +1,4 @@
-"""SQLite storage. Five tables, and only one of them holds anything you typed.
+"""SQLite storage. Six tables, and only one of them holds anything you typed.
 
 `updates.body` is the raw text, stored exactly as entered and never rewritten.
 Everything else — summaries, answers — is derived, cached, and safe to throw
@@ -12,6 +12,7 @@ say" a question with one answer.
 """
 
 import datetime
+import json
 import os
 import pathlib
 import sqlite3
@@ -80,7 +81,29 @@ CREATE TABLE IF NOT EXISTS answers (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS answers_by_project ON answers(project_id, id DESC);
+
+-- The left pane, and the only thing in here that reads every project at once.
+-- One row: it has no scope to key on, which is the whole point of it.
+--
+-- It goes stale two ways. A new update anywhere is the familiar one. The other
+-- is the calendar: an agenda that says "today" was true on the morning it was
+-- built and is a lie the morning after, so `for_date` is checked exactly as
+-- strictly as `through_update_id`.
+CREATE TABLE IF NOT EXISTS agenda (
+    id                INTEGER PRIMARY KEY CHECK (id = 1),
+    body              TEXT NOT NULL,
+    for_date          TEXT NOT NULL,
+    through_update_id INTEGER NOT NULL,
+    read_updates      INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL
+);
 """
+
+
+def today() -> str:
+    """The local calendar date. The agenda is built for one specific day, and
+    the pane compares this against the day it was built for."""
+    return datetime.date.today().isoformat()
 
 
 def now() -> str:
@@ -146,6 +169,9 @@ def _migrate(conn) -> list[str]:
             " FROM summaries_old")
         conn.execute("DROP TABLE summaries_old")
         done.append("summaries rekeyed by scope")
+    if _has(conn, "agenda") and "read_updates" not in _cols(conn, "agenda"):
+        conn.execute("ALTER TABLE agenda ADD COLUMN read_updates INTEGER NOT NULL DEFAULT 0")
+        done.append("agenda.read_updates")
     return done
 
 
@@ -474,3 +500,107 @@ def delete_answer(aid: int) -> dict:
         return {"deleted": aid}
     finally:
         conn.close()
+
+
+# -------------------------------------------------------------------- agenda
+
+# Per project, so one noisy project cannot crowd out a quiet one that has the
+# deadline you actually needed to see. Anything beyond this is reported in the
+# pane rather than dropped silently — a cap you cannot see reads as "there was
+# nothing else", which is the one thing it must not do.
+AGENDA_PER_PROJECT = 40
+
+
+def agenda_context() -> dict:
+    """Every project's recent updates, for the one cross-project read.
+
+    Newest last, like every other context this app builds, so the model reads
+    each project forwards. Projects with nothing in them are included by name
+    anyway: "no updates" about a live project is itself worth the model seeing.
+    """
+    conn = connect()
+    try:
+        out, dropped = [], 0
+        for p in conn.execute(
+                "SELECT id, name FROM projects ORDER BY name COLLATE NOCASE"):
+            n = conn.execute("SELECT count(*) FROM updates WHERE project_id = ?",
+                             (p["id"],)).fetchone()[0]
+            rows = _rows(conn.execute("""
+                SELECT u.id, u.body, u.created_at, t.name AS topic
+                FROM updates u LEFT JOIN topics t ON t.id = u.topic_id
+                WHERE u.project_id = ? ORDER BY u.id DESC LIMIT ?
+            """, (p["id"], AGENDA_PER_PROJECT)))
+            dropped += max(0, n - AGENDA_PER_PROJECT)
+            out.append({"id": p["id"], "name": p["name"],
+                        "updates": list(reversed(rows))})
+        return {
+            "projects": out,
+            "dropped": dropped,
+            "newest": conn.execute("SELECT ifnull(max(id), 0) FROM updates").fetchone()[0],
+            "total": conn.execute("SELECT count(*) FROM updates").fetchone()[0],
+        }
+    finally:
+        conn.close()
+
+
+def agenda() -> dict:
+    """The cached agenda, with both kinds of staleness already worked out."""
+    conn = connect()
+    try:
+        total = conn.execute("SELECT count(*) FROM updates").fetchone()[0]
+        # What the cap left out, so the pane can say so. A cap you cannot see
+        # reads as "there was nothing else".
+        dropped = conn.execute("""
+            SELECT ifnull(sum(max(0, n - ?)), 0) FROM
+                (SELECT count(*) AS n FROM updates GROUP BY project_id)
+        """, (AGENDA_PER_PROJECT,)).fetchone()[0]
+        r = conn.execute("SELECT body, for_date, through_update_id, read_updates,"
+                         " created_at FROM agenda WHERE id = 1").fetchone()
+        if not r:
+            return {"built": False, "items": [], "updates": total,
+                    "dropped": dropped, "per_project": AGENDA_PER_PROJECT}
+        behind = conn.execute("SELECT count(*) FROM updates WHERE id > ?",
+                              (r["through_update_id"],)).fetchone()[0]
+        outdated = r["for_date"] != today()
+        # A newest-id watermark only notices the set growing. Delete a project
+        # and its updates go with it, leaving items about work that no longer
+        # exists — so the count it read is checked as well.
+        changed = total != r["read_updates"] and not behind
+        return {
+            "built": True,
+            # Stored as JSON because it was validated on the way in; a row that
+            # will not parse means the store was edited by hand, and an empty
+            # pane is a better answer to that than a broken page.
+            "items": json.loads(r["body"]),
+            "for_date": r["for_date"],
+            "created_at": r["created_at"],
+            "through_update_id": r["through_update_id"],
+            "behind": behind,
+            "outdated": outdated,
+            "changed": changed,
+            "stale": bool(behind or outdated or changed),
+            "updates": total,
+            "dropped": dropped,
+            "per_project": AGENDA_PER_PROJECT,
+        }
+    finally:
+        conn.close()
+
+
+def save_agenda(items: list, through: int, for_date: str, read: int) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            conn.execute("""
+                INSERT INTO agenda (id, body, for_date, through_update_id,
+                                    read_updates, created_at)
+                VALUES (1, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    body = excluded.body, for_date = excluded.for_date,
+                    through_update_id = excluded.through_update_id,
+                    read_updates = excluded.read_updates,
+                    created_at = excluded.created_at
+            """, (json.dumps(items), for_date, through, read, now()))
+    finally:
+        conn.close()
+    return agenda()
