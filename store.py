@@ -173,6 +173,42 @@ def now() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def stamp(on=None) -> str:
+    """The moment an update goes on the timeline. Almost always now().
+
+    `on` is the day the thing actually happened, for the Wednesday you write up
+    Monday's 1-1. It overwrites the date rather than sitting beside it in a
+    second column, because there is one timeline here and a second timestamp
+    would fork the meaning of "when" across every query and every prompt in the
+    app — for the sake of a distinction, when you typed it as against when it
+    happened, that no brief has ever needed.
+
+    The clock time is kept rather than zeroed, so several notes backdated to
+    the same day still order among themselves, and so a date never renders as a
+    suspiciously round midnight.
+
+    `id` is deliberately untouched. Every staleness watermark in the store asks
+    "has anything been entered since this brief was written", which is a
+    question about entry order — and entry order is exactly what an
+    autoincrementing id is. Backdating must not make a brief look current.
+    """
+    if on in (None, ""):
+        return now()
+    try:
+        d = datetime.date.fromisoformat(str(on).strip())
+    except (ValueError, TypeError):
+        raise ValueError("a date looks like 2026-09-04")
+    t = datetime.datetime.now().astimezone()
+    if d > t.date():
+        # An update is a record of something that happened. A future-dated one
+        # would sort above everything, tell `last_meeting` you have already had
+        # the next conversation, and read as "today" in the list.
+        raise ValueError("an update records what happened — today or earlier")
+    if d == t.date():
+        return now()
+    return t.replace(year=d.year, month=d.month, day=d.day).isoformat(timespec="seconds")
+
+
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -473,7 +509,7 @@ def project(pid: int) -> dict:
         """, (pid,)))
         own = _rows(conn.execute(
             "SELECT id, topic_id, body, created_at FROM updates"
-            " WHERE project_id = ? ORDER BY id DESC", (pid,)))
+            " WHERE project_id = ? ORDER BY created_at DESC, id DESC", (pid,)))
         for u in own:
             u["via"] = None
             u["links"] = []
@@ -497,13 +533,16 @@ def project(pid: int) -> dict:
             JOIN updates  u ON u.id = l.update_id
             JOIN projects h ON h.id = u.project_id
             WHERE l.project_id = ? AND u.project_id != ?
-            ORDER BY u.id DESC
+            ORDER BY u.created_at DESC, u.id DESC
         """, (pid, pid)))
         for g in guests:
             g["via"] = {"id": g.pop("via_id"), "name": g.pop("via_name"),
                         "kind": g.pop("via_kind")}
             g["links"] = []
-        out["updates"] = sorted(own + guests, key=lambda u: u["id"], reverse=True)
+        # By date, then by entry order within a day. Backdating an update is
+        # a claim about where it sits in the story, and the list is the story.
+        out["updates"] = sorted(own + guests,
+                                key=lambda u: (u["created_at"], u["id"]), reverse=True)
         out["answers"] = _rows(conn.execute(
             "SELECT id, topic_id, question, answer, created_at FROM answers"
             " WHERE project_id = ? ORDER BY id DESC LIMIT 40", (pid,)))
@@ -629,16 +668,17 @@ def delete_topic(tid: int) -> dict:
 
 # ------------------------------------------------------------------- updates
 
-def add_update(pid: int, body: str, topic_id=None, links=None) -> dict:
+def add_update(pid: int, body: str, topic_id=None, links=None, on=None) -> dict:
+    """`on` is the day it happened, when that is not today. See `stamp`."""
     body = body.strip()
     if not body:
         raise ValueError("nothing to add")
+    ts = stamp(on)          # before the write, so a bad date costs nothing
     conn = connect()
     try:
         if not conn.execute("SELECT 1 FROM projects WHERE id = ?", (pid,)).fetchone():
             raise ValueError("no such project")
         tid = _own_topic(conn, pid, topic_id)
-        ts = now()
         # One transaction: an update that saved without the links you chose
         # would look filed correctly and quietly not be.
         with conn:
@@ -842,7 +882,7 @@ def agenda_context() -> dict:
             rows = _rows(conn.execute("""
                 SELECT u.id, u.body, u.created_at, t.name AS topic
                 FROM updates u LEFT JOIN topics t ON t.id = u.topic_id
-                WHERE u.project_id = ? ORDER BY u.id DESC LIMIT ?
+                WHERE u.project_id = ? ORDER BY u.created_at DESC, u.id DESC LIMIT ?
             """, (p["id"], AGENDA_PER_PROJECT)))
             dropped += max(0, n - AGENDA_PER_PROJECT)
             out.append({"id": p["id"], "name": p["name"], "kind": p["kind"],
@@ -979,18 +1019,23 @@ def page_agenda_context(pid: int) -> dict:
             WHERE u.id IN (
                 SELECT id FROM updates WHERE project_id = :p
                 UNION SELECT update_id FROM update_links WHERE project_id = :p)
-            ORDER BY u.id DESC LIMIT :n
+            ORDER BY u.created_at DESC, u.id DESC LIMIT :n
         """, {"p": pid, "n": PAGE_AGENDA_MAX}))
         for r in rows:
             home = r.pop("via_id"), r.pop("via_name"), r.pop("via_kind")
             r["via"] = None if home[0] == pid else {
                 "id": home[0], "name": home[1], "kind": home[2]}
-        total = len(_page_scope(conn, pid))
+        ids = _page_scope(conn, pid)
+        total = len(ids)
         return {
             "id": p["id"], "name": p["name"], "kind": p["kind"],
             "about": p["about"],
             "updates": list(reversed(rows)),
-            "newest": max((r["id"] for r in rows), default=0),
+            # The newest id in SCOPE, not the newest one read. Rows come back
+            # by date now, so a backdated update can carry the highest id and
+            # still fall outside the cap — and a pane whose watermark could
+            # never reach the store's would report itself behind forever.
+            "newest": max(ids, default=0),
             "total": total,
             "dropped": max(0, total - PAGE_AGENDA_MAX),
         }
@@ -1125,7 +1170,7 @@ def prep_context(pid: int, since: str | None) -> dict:
         own = _rows(conn.execute("""
             SELECT u.id, u.body, u.created_at, t.name AS topic
             FROM updates u LEFT JOIN topics t ON t.id = u.topic_id
-            WHERE u.project_id = ? ORDER BY u.id DESC LIMIT ?
+            WHERE u.project_id = ? ORDER BY u.created_at DESC, u.id DESC LIMIT ?
         """, (pid, PREP_MAX)))
         for r in own:
             r["source"] = "own"
@@ -1137,7 +1182,7 @@ def prep_context(pid: int, since: str | None) -> dict:
             JOIN updates  u ON u.id = l.update_id
             JOIN projects h ON h.id = u.project_id
             WHERE l.project_id = ? AND u.project_id != ?
-            ORDER BY u.id DESC LIMIT ?
+            ORDER BY u.created_at DESC, u.id DESC LIMIT ?
         """, (pid, pid, PREP_MAX)))
         for r in linked:
             r["source"] = "linked"
@@ -1156,7 +1201,7 @@ def prep_context(pid: int, since: str | None) -> dict:
                 FROM updates u JOIN projects h ON h.id = u.project_id
                 WHERE u.project_id != ? AND u.body LIKE ?
                   AND (? IS NULL OR u.created_at >= ?)
-                ORDER BY u.id DESC LIMIT ?
+                ORDER BY u.created_at DESC, u.id DESC LIMIT ?
             """, (pid, f"%{p['name']}%", since, since, PREP_MAX)))
             for r in rows:
                 if r["id"] not in seen and pat.search(r["body"]):

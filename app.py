@@ -84,9 +84,12 @@ def post_update(b):
     links = b.get("links") or []
     if not isinstance(links, list) or len(links) > 20:
         raise ValueError("bad links")
+    # `on` is the day it happened, when that is not today. The store checks
+    # the shape and refuses a future one — see store.stamp.
     return store.add_update(_int(b.get("project_id"), "project"),
                             b.get("body") or "", b.get("topic_id"),
-                            [_int(x, "link") for x in links])
+                            [_int(x, "link") for x in links],
+                            on=(b.get("on") or "").strip() or None)
 
 
 def post_link(b):

@@ -211,6 +211,42 @@ write it, it is stored as typed, no model writes it. *Draft from my notes*
 offers to fill `about` only — what you want out of a brief is not something
 your notes know.
 
+## The day it happened
+
+**Review finding, 2026-08-28.** Every update was stamped `now()`, so the notes
+you write up on Wednesday about Monday's 1-1 said Wednesday. That is wrong in
+the one place it matters most: `last_meeting` is the newest note on the page,
+so prep's *since you last spoke* window closed over the very conversation it
+exists to catch you up on.
+
+The composer has a day, pre-filled with today. Ignore it and nothing changes —
+`stamp(None)` is `now()`, byte for byte what it was.
+
+**One timeline, so the date moves rather than gaining a neighbour.** A second
+column — when you typed it, beside when it happened — would fork the meaning of
+"when" across every query and every prompt in the app, and no brief has ever
+needed the distinction. What is lost is the ability to say *"written up three
+days late"*, and nothing asks.
+
+**`id` is untouched, and that is what keeps staleness honest.** Every watermark
+here asks *has anything been entered since this brief was written*, which is a
+question about entry order — and entry order is what an autoincrementing id
+is. So a backdated update still makes the summary and both panes say they are
+behind, exactly as any other new update does. Verified.
+
+| | |
+|---|---|
+| **The list is a chronology** | Everything that meant *most recent* by id now means it by date: the page, guests, both panes' contexts, all three of prep's sources. Search already did. A note written last and dated first sorts first. |
+| **The future is refused** | An update records what happened. A future-dated one would sort above everything, read as "today", and tell `last_meeting` you have already had the next conversation. `400`, before anything is written. |
+| **The clock time is kept** | Not zeroed to midnight. Several notes backdated to one day still order among themselves, and a date never renders as a suspiciously round 00:00. |
+| **Acting never backdates** | `done` · `note` · `date` log what you just did, so they stamp now. Only the composer offers a day. |
+
+One consequence worth naming: a page's pane takes the 120 most recent updates
+*by date*, so a backdated update can carry the highest id and fall outside that
+window. Its watermark is therefore the newest id in scope rather than the
+newest id read — a pane whose watermark could never reach the store's would
+report itself behind forever.
+
 ## Linking
 
 **User request, 2026-08-28.** Work on a project is work with people, and a 1-1
