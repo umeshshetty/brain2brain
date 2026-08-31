@@ -419,6 +419,15 @@ itself: `#q` there is the Ask box, and the hash change routes asynchronously,
 so it records what it wanted and the home view does it on arrival — once, so
 the next visit still focuses Add.
 
+**Most of finding something is not searching for it.** The page list was one
+card per row, full width, eighty pixels tall, to hold a name and a five-word
+line about it — so fourteen projects filled a screen and twenty-two people did
+not fit on one. It is a grid now: three columns, a name and one line, and both
+lists fit at once. A page you can see is a page you do not have to go looking
+for, which is the cheapest findability there is. A page you made and have not
+written on yet is drawn dashed and dim rather than dropped — half of them are
+that, and they should not compete with the ones that moved this week.
+
 **And when you would rather just look, the list sorts A–Z.** It comes back
 newest-touched first, which is right for the top of it and useless for the tail
 — a page you touched three weeks ago sits at position 30 with nothing to aim
