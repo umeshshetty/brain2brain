@@ -56,7 +56,17 @@
   .sec { margin:30px 0 0; }
   .search { margin-bottom:14px; }
   mark { background:var(--warn-bg); color:inherit; border-radius:3px; padding:0 1px; }
+  /* What the arrow keys are on, and what Enter will open. Said in words as
+     well as shown, because a highlight alone does not teach a key. */
+  .snav { font-size:12.5px; display:flex; gap:5px; align-items:center;
+          flex-wrap:wrap; margin:0 0 10px; }
+  .snav b { color:var(--ink); font-weight:600; }
+  .snav .sp { margin-left:auto; font-variant-numeric:tabular-nums; }
   .spages { margin:2px 0 14px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .spages .lk.sel { border-color:var(--accent); background:var(--card);
+                    box-shadow:inset 2px 0 0 var(--accent); }
+  .shead.sel { box-shadow:inset 3px 0 0 var(--accent); border-radius:3px;
+               padding-left:9px; margin-left:-9px; }
   .sgroup { margin-bottom:18px; }
   .shead { display:flex; gap:8px; align-items:baseline; font-weight:600;
            text-decoration:none; color:var(--ink); margin-bottom:6px; }
@@ -167,6 +177,7 @@
   .chip.on { background:var(--ink); border-color:var(--ink); color:var(--bg); }
   .chip.on span { color:var(--bg); opacity:.65; }
   .chip.add { color:var(--dim); border-style:dashed; cursor:pointer; font-family:inherit; }
+  .chip.ord { cursor:pointer; font-family:inherit; font-size:12px; padding:4px 10px; }
   h2 .scope {
     text-transform:none; letter-spacing:0; font-weight:500; color:var(--ink);
     background:var(--card); border:1px solid var(--line); border-radius:6px;
@@ -492,6 +503,10 @@ let editAbout = false, aboutDraft = null;
 // keep — so it lives here rather than in the URL, and survives the pane
 // re-rendering underneath it. seq drops answers that arrive out of order.
 let searchQ = "", searchRes = null, searchSeq = 0, searchTimer = null;
+/* Which of the found pages the arrow keys are on. Search is how you get to a
+   page once there are more of them than fit on a screen, and reaching for the
+   mouse to finish is most of the trip. */
+let searchSel = 0;
 
 // Half the Now pane says "today", and that stops being true at midnight — so
 // the morning's first look would otherwise be at a pane that is confidently
@@ -511,6 +526,17 @@ let olderOn = "";
    routes asynchronously, so the key cannot focus the box itself — it says what
    it wanted and `home()` does it when the box exists. */
 let wantSearch = false;
+/* Find-in-page: a filter over the updates already on screen, and the scope it
+   belongs to. Not the search box — that reads the whole store and answers
+   "who else has said this". This answers "where in here did I say it", which
+   is a different question with a different answer shape, and it makes no
+   request at all. */
+let findQ = "", findKey = "";
+/* How the page list is ordered. Recency is right for the top of the list and
+   useless for the tail — a page you touched three weeks ago is at position 30
+   with nothing to aim at. A–Z gives every page a fixed place you can learn.
+   Not stored anywhere: it is how you are looking right now, not a setting. */
+let sortAZ = false;
 
 /* One row of either pane.
  *
@@ -697,14 +723,27 @@ function snippet(body, q) {
        + (end < flat.length ? " …" : "");
 }
 
+/* Everything a search offers to open is a page — an update row links to the
+   page it lives on, because that is where its text is. So the arrow keys walk
+   pages, deduped, in the order they appear: names that matched first, then one
+   per group of matching updates. */
+function searchTargets(r) {
+  const seen = new Set(), out = [];
+  const take = pg => { if (!seen.has(pg.id)) { seen.add(pg.id); out.push(pg); } };
+  if (r) { (r.pages || []).forEach(take); (r.updates || []).forEach(u => take(u.page)); }
+  return out;
+}
+
 // The whole-store read, grouped by the page each match lives on. Plain
 // substring, no model, nothing written — the correlation primitive where a
 // false positive costs one glance.
-function searchView(r) {
+function searchView(r, sel = 0) {
   if (!r) return "";
   const q = r.q;
   if (!r.pages.length && !r.updates.length)
     return `<div class="empty">Nothing says “${esc(q)}” yet.</div>`;
+  const targets = searchTargets(r);
+  const here = targets[sel] ? targets[sel].id : null;
 
   const groups = [], byPage = new Map();
   for (const u of r.updates) {
@@ -715,11 +754,17 @@ function searchView(r) {
     byPage.get(u.page.id).rows.push(u);
   }
   return `
+    ${targets.length ? `<div class="snav dim">
+      <kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>↵</kbd> open
+      <b>${esc(targets[sel] ? targets[sel].name : "")}</b>
+      <span class="sp">${sel + 1} of ${targets.length} page${
+        targets.length === 1 ? "" : "s"}</span></div>` : ""}
     ${r.pages.length ? `<div class="spages"><span class="dim">Pages</span> ${r.pages.map(pg =>
-      `<a class="lk${pg.kind === "person" ? " person" : ""}" href="#/p/${pg.id}"><b>${hilite(pg.name, q)}</b></a>`).join(" ")}</div>` : ""}
+      `<a class="lk${pg.kind === "person" ? " person" : ""}${pg.id === here ? " sel" : ""}"
+         href="#/p/${pg.id}"><b>${hilite(pg.name, q)}</b></a>`).join(" ")}</div>` : ""}
     ${groups.map(g => `
       <div class="sgroup">
-        <a class="shead" href="#/p/${g.page.id}">${esc(g.page.name)}
+        <a class="shead${g.page.id === here ? " sel" : ""}" href="#/p/${g.page.id}">${esc(g.page.name)}
           <span class="dim">${g.page.kind === "person" ? "person" : "project"} · ${g.rows.length} match${g.rows.length === 1 ? "" : "es"}</span></a>
         ${g.rows.map(u => `
           <a class="srow" href="#/p/${u.page.id}">
@@ -741,6 +786,11 @@ async function home(kind) {
   const byId = Object.fromEntries(projects.map(p => [p.id, p]));
   const people = kind === "person";
   const mine = projects.filter(p => (p.kind === "person") === people);
+  // A function: the order can change without another read.
+  const listed = () => sortAZ
+    ? [...mine].sort((a, b) => a.name.localeCompare(b.name, undefined,
+        { sensitivity: "base", numeric: true }))
+    : mine;
   const nProj = projects.length - projects.filter(p => p.kind === "person").length;
   const nPeep = projects.length - nProj;
 
@@ -767,12 +817,15 @@ async function home(kind) {
       <div class="chips">
         <a class="chip${people ? "" : " on"}" href="#/">Projects<span>${nProj}</span></a>
         <a class="chip${people ? " on" : ""}" href="#/people">People<span>${nPeep}</span></a>
+        ${projects.length > 8 ? `<span class="sp"></span>
+          <button class="chip ord${sortAZ ? "" : " on"}" id="ordrec">Recent</button>
+          <button class="chip ord${sortAZ ? " on" : ""}" id="ordaz">A–Z</button>` : ""}
       </div>
       <div class="card row">
         <input type="text" id="newname" placeholder="${W.add}" maxlength="120" autocomplete="off">
         <button class="go" id="newbtn">Add</button>
       </div>
-      ${mine.length ? `<div class="plist">` + mine.map(p => `
+      ${mine.length ? `<div class="plist">` + listed().map(p => `
         <a class="pcard" href="#/p/${p.id}">
           <b>${esc(p.name)}</b>
           <span class="meta">${p.updates} ${W.unit}${p.updates === 1 ? "" : "s"}${
@@ -792,6 +845,10 @@ async function home(kind) {
   const rerender = () => { app.innerHTML = nowPane(ag, byId, projects) + right(); wire(); };
 
   app.onclick = async e => {
+    if (e.target.id === "ordrec" || e.target.id === "ordaz") {
+      sortAZ = e.target.id === "ordaz";
+      return rerender();
+    }
     if (e.target.id === "bak") {
       // No spinner label from `busy`: this is a file copy, not a Claude call,
       // and it is done before the word would finish rendering.
@@ -848,7 +905,7 @@ async function home(kind) {
   // every answer, and search is typed into, continuously.
   const drawSearch = () => {
     const on = searchQ.trim().length >= 2;
-    $("#sout").innerHTML = on ? searchView(searchRes) : "";
+    $("#sout").innerHTML = on ? searchView(searchRes, searchSel) : "";
     $("#browse").style.display = on ? "none" : "";
   };
 
@@ -869,13 +926,32 @@ async function home(kind) {
         const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
         if (seq !== searchSeq) return;   // a newer keystroke owns the screen
         searchRes = r;
+        // A new answer is a new list; the old position meant a different page.
+        searchSel = 0;
         drawSearch();
       }, 150);
     };
     $("#q").onkeydown = e => {
       if (e.key === "Escape") {
         clearTimeout(searchTimer); ++searchSeq;
-        searchQ = ""; e.target.value = ""; searchRes = null; drawSearch();
+        searchQ = ""; e.target.value = ""; searchRes = null; searchSel = 0;
+        return drawSearch();
+      }
+      const targets = searchTargets(searchRes);
+      if (!targets.length) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        // Wrapping, because the list is short and the alternative is a key
+        // that silently does nothing at one end of it.
+        const n = targets.length;
+        searchSel = (searchSel + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        e.preventDefault();
+        return drawSearch();
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        // The box keeps its word: coming back with the browser's back button
+        // should return to the results you were looking at.
+        location.hash = `#/p/${targets[searchSel].id}`;
       }
     };
     drawSearch();
@@ -995,7 +1071,18 @@ async function projectPage(id, scope) {
   const olderKey = `${id}:${scope}`;
   // A function, not a value: `shell()` runs again after every click that
   // changes what is on screen, and this is one of them.
-  const shown = () => updates.length > OLDER && olderOn !== olderKey
+  // Typing on one scope should not silently filter another, but reloading the
+  // page you are on after an action should keep what you typed.
+  if (findKey !== olderKey) { findQ = ""; findKey = olderKey; }
+  const hit = u => u.body.toLowerCase().includes(findQ.toLowerCase());
+  // While filtering there is no 40 cap: the filter is already the cap, and a
+  // "show the other 200" under a filtered list would be a lie about what it
+  // was holding back.
+  // `hilite` escapes before it marks and `linkify` runs on escaped text, so
+  // the order here is the same discipline both of them already keep.
+  const body = u => findQ ? linkify(hilite(u.body, findQ)) : linkify(esc(u.body));
+  const shown = () => findQ ? updates.filter(hit)
+                    : updates.length > OLDER && olderOn !== olderKey
                       ? updates.slice(0, OLDER) : updates;
   const scopeName = tid ? byId[tid].name : unfiledView ? "Unfiled" : "whole project";
 
@@ -1177,6 +1264,19 @@ async function projectPage(id, scope) {
     <div class="sec">
       <h2>${W.list} <span class="scope">${esc(scopeName)}</span>
         <span class="dim" style="text-transform:none;letter-spacing:0">${updates.length}</span></h2>
+      ${updates.length > 8 ? `<input type="text" id="find" class="search" autocomplete="off"
+        spellcheck="false" value="${esc(findQ)}"
+        placeholder="Find in these ${updates.length} ${W.unit}s — a word, a name, a date">` : ""}
+      <div id="ulist">${list()}</div>
+    </div></div>`;
+
+  // Its own node, so typing in the filter redraws the list and nothing else.
+  // Replacing the whole view would pull the cursor out of the box mid-word.
+  function list() {
+    return `
+      ${findQ ? `<div class="dim" style="font-size:12.5px;margin:-4px 0 12px">${
+        shown().length ? `${shown().length} of ${updates.length}`
+                       : `Nothing here says “${esc(findQ)}”`}</div>` : ""}
       ${updates.length ? shown().map(u => u.via ? `
         <div class="upd guest">
           <div class="when">${esc(when(u.created_at))}
@@ -1187,7 +1287,7 @@ async function projectPage(id, scope) {
             <a class="link" href="#/p/${u.via.id}">open</a>
             <button class="link danger" data-unlink="${u.id}" data-pid="${p.id}"
               >unlink</button></div>
-          <div class="body">${linkify(esc(u.body))}</div>
+          <div class="body">${body(u)}</div>
         </div>` : `
         <div class="upd">
           <div class="when">${esc(when(u.created_at))}
@@ -1195,7 +1295,7 @@ async function projectPage(id, scope) {
               >${topicOptions(u.topic_id ?? "")}</select>`
               : u.topic_id ? `<span class="filed">${esc(byId[u.topic_id]?.name || "")}</span>` : ""}
             <button class="link danger" data-delupd="${u.id}">delete</button></div>
-          <div class="body">${linkify(esc(u.body))}</div>
+          <div class="body">${body(u)}</div>
           <div class="lks" style="margin-top:7px">
             ${u.links.map(l => lkChip(l, u.id)).join("")}
             <select class="addlk" data-link="${u.id}"><option value="">+ link…</option>${
@@ -1211,11 +1311,11 @@ async function projectPage(id, scope) {
                or re-file one from <a href="${href("")}">All</a>.`
             : unfiledView ? `Everything is filed.`
             : W.none}</div>`}
-      ${updates.length > OLDER ? `<button class="more" id="older">${
+      ${!findQ && updates.length > OLDER ? `<button class="more" id="older">${
         olderOn === olderKey
           ? `Show the most recent ${OLDER}`
-          : `Show the other ${updates.length - OLDER}`}</button>` : ""}
-    </div></div>`;
+          : `Show the other ${updates.length - OLDER}`}</button>` : ""}`;
+  }
 
   // The pane on the left, the page on the right — the same shape as home,
   // because it is the same question asked of one page instead of all of them.
@@ -1251,6 +1351,18 @@ async function projectPage(id, scope) {
   };
   function wire() {
     $("#addupd").onclick = post;
+    if ($("#find")) {
+      // No debounce and no request: the whole page is already in memory, so
+      // this is a filter over an array and can afford to run on every letter.
+      $("#find").oninput = e => {
+        findQ = e.target.value.trim();
+        $("#ulist").innerHTML = list();
+      };
+      $("#find").onkeydown = e => {
+        if (e.key !== "Escape") return;
+        findQ = ""; e.target.value = ""; $("#ulist").innerHTML = list();
+      };
+    }
     $("#body").onkeydown = e => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); post(); }
     };

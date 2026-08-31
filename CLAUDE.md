@@ -396,15 +396,35 @@ matches are offered above the update rows. A guest appears once, on its home
 page. Newest first, capped at 200, and the cap is printed — a silent cap reads
 as "there was nothing else", which is the one thing it must not do.
 
+**The arrow keys and `↵` finish the trip.** Search is how you reach a page
+once there are more of them than fit on a screen, and reaching for the mouse
+was most of that trip — `/ p r i ↵` is now the whole of it. Everything a search
+offers to open is a **page**: an update row already linked to the page its text
+lives on, so the keys walk pages, deduped, in the order they are shown — names
+that matched first, then one per group of matching updates. It wraps rather
+than stopping dead at either end, and a new answer starts at the top again,
+because the old position meant a different page. The strip above the results
+says which page `↵` will open and how many there are, in words: a highlight
+alone does not teach a key.
+
 **`/` from anywhere goes there and puts the cursor in it.** Search stays on
-the home view and nowhere else — a box on a project page would be a second set
-of results to look in, for a question that was never about that page — so the
-shortcut is how you reach it, and it is the part that was missing. It is
+the home view and nowhere else — a box on a project page returning results
+from every other page would be a second set of results to look in, for a
+question that was never about that page — so the shortcut is how you reach it,
+and it is the part that was missing. (The box on a project page filters that
+page and reads nothing else; see *Find-in-page* under **Topics**.) It is
 ignored while you are typing into anything, and with a modifier held, because a
 slash in a sentence is a slash. From a project page it cannot focus the box
 itself: `#q` there is the Ask box, and the hash change routes asynchronously,
 so it records what it wanted and the home view does it on arrival — once, so
 the next visit still focuses Add.
+
+**And when you would rather just look, the list sorts A–Z.** It comes back
+newest-touched first, which is right for the top of it and useless for the tail
+— a page you touched three weeks ago sits at position 30 with nothing to aim
+at. A–Z gives every page a fixed place you can learn. Offered once the store
+passes eight pages, and held in a module variable rather than the URL or the
+store, because it is how you are looking right now and not a setting.
 
 Mechanically: `hilite()` escapes before it marks, same discipline as `md()`,
 and the whole thing keys off one module state (`searchQ`) with a sequence
@@ -440,6 +460,20 @@ permits NULLs in primary key columns and every whole-project row would collide.
 | **Flat** | Topics do not nest. A project, a topic, an update — three levels is the whole model, and the second one that asks for a tree is the one to argue with. |
 | **Unfiled** | A filing view, not a subject. Summary and Ask are deliberately **not** offered on it: a brief about "whatever is unsorted" changes meaning every time you file something. |
 | **Re-filing** | Changes `topic_id` and nothing else. The raw text is never touched. |
+
+**Find-in-page is a filter, not a second search.** *Who else has said this*
+is a question about the store and lives in the search box. *Where in here did I
+say it* is a question about the page you are already on, and the answer is the
+page with fewer things in it — so it filters the updates already in memory,
+marks what matched, and makes no request at all. It runs on every keystroke
+because there is nothing to wait for, and into `#ulist` alone, because
+replacing the view would pull the cursor out of the box mid-word. It appears
+only past eight updates; below that the page is the answer.
+
+Two things follow from it being a filter. It searches the whole scope rather
+than the 40 on screen — a word that only appears in the tail is still found —
+and while it is on, the *show the other N* button goes, because a count of what
+is being held back is a lie once something else is doing the holding.
 
 **A page shows its most recent 40 and offers the rest.** Topics are the real
 answer to a page that has grown too long to read, but they are optional and a
