@@ -14,7 +14,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. nine tables
+store.py      SQLite. ten tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -379,7 +379,9 @@ is derived state with memory.
 What the app does instead is **correlate at read time, attribute everything,
 store nothing** — which it already did three times (links, the mention nudge,
 prep's *elsewhere*) before this section existed. Search is the fourth and
-bluntest: a box on the home page over every update on every page.
+bluntest: a box on the home page over every update on every page. The fifth is
+*Ask across everything*, which is offered in this same box and is the slow,
+interpretive answer to the same question — see that section.
 
 **It is a substring match, and being dumb is the point.** No model, no ranking,
 no index. The clever matching — whole words, confirmation buttons — is reserved
@@ -441,6 +443,67 @@ counter so a slow answer never overwrites a newer keystroke's. Results render
 into their own node rather than re-rendering the view — an innerHTML replace
 would pull focus out of the box mid-word. Search is transient, so it lives in
 no URL: it is a question you are asking, not a place you keep.
+
+## Ask across everything
+
+**User request, 2026-08-31.** *"just like you in Claude Code have a context of
+everything and every discussion I have with you and are able to relate stuff,
+can you make this brain similar in function? I can have separate people,
+projects, but a wider correlation is needed."*
+
+Every read in the app before this was scoped: a page, a topic, a meeting. The
+search box was the only thing that crossed pages, and it can only find the word
+you typed. So a question whose answer lives in four pages at once — *what am I
+the blocker on* — had nowhere to be asked.
+
+**One question, every page, one call.** `store.everything_context()` sends each
+project and each person as its own dated chronology, with the page's `about`
+above it, and the answer is markdown you read. Verified on the live store: 36
+pages, 27 updates, one call, and it came back with fifteen things the reader
+owed someone — each with the page and the date it came from, several of them
+found by putting two pages side by side that nothing in the store had ever
+linked.
+
+**Every claim names its page and its date, and the prompt spends most of its
+words on that.** *"Priya thinks Nov 3 slips (Priya, 2026-08-26); GoBMP still
+plans the cutover for Nov 3 (GoBMP, 2026-08-24)"* is the answer. *"There is a
+risk to the cutover"* is not, because you cannot go and check it. A connection
+has to name both ends and say what makes them look connected; a name appearing
+on two pages is **a lead, and must be called one** — nobody filed it, and the
+model may not file it either. Verified: asked who owns a thing whose owner is
+only implied, it answered *"no confirmed owner… Priya's name came up (UxM,
+2026-08-25)… whether she was formally offered it is not recorded on any page"*.
+
+**This is the fifth read-time correlation and it stores no more than the other
+four.** Links, the mention nudge, prep's *elsewhere* and search all correlate
+at read time, attribute everything and keep no graph (see *Search*). So does
+this. What is cached is the answer, in `store_answers` — keyed by nothing, like
+`agenda`, because reading everything at once is the point of it — and it is
+disposable like every other derived row.
+
+| | |
+|---|---|
+| **A guest is sent once** | An update linked to two pages is one row read from its home, with `also filed on GoBMP` in its heading. Sending it from both ends is how one remark comes to look like two people saying the same thing. |
+| **Today's date goes with it** | Otherwise the model supplies one from its own head and calls things overdue against a day nobody told it. The prompt says to write *"as of the last update"* when no date is given. |
+| **Two caps, both printed** | 150 updates per page, and a whole-store budget of 400,000 characters — an update here is whatever you pasted, and a real store's 27 updates came to 160,000 of them, so a count alone is no guide to what will fit. |
+| **The budget is spent round-robin** | Newest first, one update per page per pass, so a page you paste transcripts into cannot eat it before a quiet page has given up its one line. A page that runs out stops there rather than skipping to a shorter update further back: a hole in the middle of a page's chronology is worse than a short one, because the prompt reads each page as a story. |
+| **`guidance` does not reach it** | What you want out of a brief *about one page* has no standing over a read of all of them, and thirty-six pages' worth of instructions addressed to one writer is not a prompt. `about` still goes, because it describes a subject rather than instructing the writer. |
+| **Stale the usual two ways** | The `through_update_id` watermark notices the set growing, `read_updates` notices it changing. There is no third axis — unlike the Now pane, an answer never claimed to be about today. |
+
+**It is offered in the search box, and the difference between the two is
+stated.** You type once; search answers underneath instantly, and above it sits
+*Ask across everything — one call, up to a minute or two*. Search is a
+substring match that reads nothing and writes nothing and tells you where you
+said a word. This is a Claude call over every page and tells you what they add
+up to. **The offer stands when nothing matched at all,** which is exactly when
+it is worth taking: no page saying *"who is blocked"* is not the same as nobody
+being blocked.
+
+**Retyping a question you already asked shows the answer, and spends nothing.**
+An answer is keyed by the question that produced it, so the box matches on the
+question itself — which is also how the *Asked across everything* list on the
+home view opens one. Nothing is re-asked unless you press the button.
+
 
 ## Topics
 

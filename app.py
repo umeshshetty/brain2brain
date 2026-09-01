@@ -222,6 +222,35 @@ def post_ask(b):
     return store.save_answer(p["id"], question, answer, tid)
 
 
+def post_ask_all(b):
+    """One question, read against every page at once.
+
+    The expensive twin of search. Search is a substring match that reads
+    nothing and writes nothing, and it answers "where did I say this". This
+    answers "what does all of it add up to", which no single page can, and
+    costs a Claude call to do it. The two sit next to each other in the UI on
+    purpose: you type once, and choose which of them you wanted.
+    """
+    question = (b.get("question") or "").strip()
+    if not question:
+        raise ValueError("ask something")
+    ctx = store.everything_context()
+    if not ctx["total"]:
+        raise ValueError("nothing to read yet — add an update first")
+    with _ai("a question about everything"):
+        answer = ai.ask_everything(ctx["pages"], question, store.today())
+    return store.save_store_answer(question, answer, ctx["newest"], ctx["total"],
+                                   ctx["dropped"])
+
+
+def post_delete_store_answer(b):
+    return store.delete_store_answer(int(b["id"]))
+
+
+def api_asked(q):
+    return {"answers": store.store_answers()}
+
+
 def api_search(q):
     """Substring search across every page. A read like any other — no model,
     nothing cached, nothing written — so it lives in READS with no ceremony."""
@@ -430,6 +459,7 @@ READS = {"/api/projects": api_projects,
          "/api/project": api_project,
          "/api/agenda": api_agenda,
          "/api/search": api_search,
+         "/api/asked": api_asked,
          "/api/busy": api_busy}
 WRITES = {
     "/api/project/new": post_project,
@@ -454,6 +484,8 @@ WRITES = {
     "/api/prep": post_prep,
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,
+    "/api/ask-all": post_ask_all,
+    "/api/ask-all/delete": post_delete_store_answer,
 }
 
 

@@ -253,6 +253,97 @@ def ask(project: str, updates: list[dict], question: str, kind: str = "project",
     return run(ASK_INSTRUCTION.replace("one project", noun), ctx)
 
 
+
+# --------------------------------------------------------------- everything
+
+ASK_ALL_INSTRUCTION = """\
+Below is one person's whole notebook: every project they keep and every person
+they take 1-1 notes on, each as its own page of raw dated updates, oldest first
+within a page. Then a question.
+
+Answer the question from the pages. The reason you are being given all of them
+at once is that the answer usually is not on one page: the same thing raised in
+two 1-1s, a commitment made to a person that answers an open question on a
+project, a person named in a project update who has a page of their own, two
+updates that cannot both be true. Say those out loud. That is the value here,
+and a per-page answer would already have covered anything that was not.
+
+Rules, in order of how much they matter:
+
+- Every claim names the page it came from and the date on it. Write it as
+  (Page, 2026-08-25). A sentence with no page attached is not usable, because
+  the reader cannot go and check it.
+- When you connect two things, name both ends and say what makes them look
+  connected. "Priya said Nov 3 slips (Priya, 2026-08-26); GoBMP still plans the
+  cutover for Nov 3 (GoBMP, 2026-08-24)" is the answer. "There is a risk to the
+  cutover" is not.
+- Invent nothing, and infer nothing you cannot point at. If two pages mention a
+  name, that is two mentions of a name — it is a lead, and say so in those
+  words. Nobody has filed it as the same thing, and you must not file it either.
+- If the pages do not answer the question, say exactly what is missing and
+  which page you would expect it on. That is a useful answer. A guess is not.
+- Where the pages disagree, give both and their dates rather than picking. The
+  newer one is not automatically the true one.
+
+Today's date is given if it matters to the question. Where it is not given, do
+not assume one: say "as of the last update" rather than calling something
+overdue against a date nobody told you.
+
+Be direct and short: lead with the answer, then what it rests on. Skip any page
+with nothing to say about the question — you do not have to mention them all.
+Output markdown. No preamble.
+
+A page may open with "Who this page is to the reader". That is standing context
+the reader wrote about the relationship. It may change what is worth telling
+them; it is never evidence, never dated, and never quoted as though someone
+said it."""
+
+
+def everything_context(pages: list[dict], question: str, today: str = "") -> str:
+    """Every page, in full, as one document.
+
+    Headed by name rather than by id, unlike the agenda's context. The agenda
+    needs an id back so it can build a link; this one is writing prose that a
+    person reads, and a brief that says "(Priya, 2026-08-26)" is worth more to
+    them than one that says "(page 5)".
+
+    Links are named on the update that carries them rather than the update
+    being sent twice, once from each end. Two copies of one sentence is how a
+    single remark comes to look like two people saying the same thing, which is
+    exactly the error this read exists to avoid making.
+    """
+    lines = []
+    for p in pages:
+        head = "Person" if p.get("kind") == "person" else "Project"
+        lines.append(f"# {head}: {p['name']}")
+        lines.append("")
+        prof = (p.get("about") or "").strip()
+        if prof:
+            lines += ["## Who this page is to the reader",
+                      "",
+                      "The reader wrote this themselves. Standing context, not"
+                      " a note and not something anyone said.",
+                      "", prof, ""]
+        if not p["updates"]:
+            lines += ["(nothing written here yet)", ""]
+        for u in p["updates"]:
+            h = u["created_at"][:16].replace("T", " ")
+            if u.get("topic"):
+                h += f" · {u['topic']}"
+            if u.get("links"):
+                h += " · also filed on " + ", ".join(u["links"])
+            lines += [f"## {h}", u["body"], ""]
+        lines += ["---", ""]
+    if today:
+        lines += [f"# Today is {today}", ""]
+    lines += ["# Question", "", question, ""]
+    return "\n".join(lines)
+
+
+def ask_everything(pages: list[dict], question: str, today: str = "") -> str:
+    return run(ASK_ALL_INSTRUCTION, everything_context(pages, question, today))
+
+
 # ------------------------------------------------------------------- agenda
 
 AGENDA_INSTRUCTION = """\

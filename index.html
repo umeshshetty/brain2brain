@@ -68,6 +68,20 @@
   .shead.sel { box-shadow:inset 3px 0 0 var(--accent); border-radius:3px;
                padding-left:9px; margin-left:-9px; }
   .sgroup { margin-bottom:18px; }
+  /* The slow twin of search, offered in the same box. Bordered rather than
+     filled: it is the expensive option and should not look like the default. */
+  .askall { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+            border:1px solid var(--line); border-radius:10px;
+            padding:10px 12px; margin:0 0 16px; }
+  .askall .dim { font-size:12.5px; }
+  .allans { border:1px solid var(--accent); border-radius:10px;
+            padding:14px 16px; margin:0 0 18px; border-top-width:1px; }
+  .qa.allans .q button { visibility:visible; }
+  .arow { display:flex; gap:10px; align-items:baseline; padding:5px 0;
+          border-bottom:1px solid var(--line); font-size:13.5px; }
+  .arow:last-child { border-bottom:none; }
+  .arow button { text-align:left; flex:1; }
+  .arow .dim { font-size:12px; white-space:nowrap; }
   .shead { display:flex; gap:8px; align-items:baseline; font-weight:600;
            text-decoration:none; color:var(--ink); margin-bottom:6px; }
   .shead .dim { font-weight:400; font-size:12.5px; }
@@ -415,6 +429,7 @@ const AI_LABEL = {
   ask:    l  => `a question about ${l}`,
   prep:   p  => `the ${p.name} meeting brief`,
   draft:  p  => `a profile for ${p.name}`,
+  askAll: () => "a question about everything",
 };
 
 /* Run an async action with the button showing it is working. Every Claude call
@@ -746,11 +761,47 @@ function searchTargets(r) {
 // The whole-store read, grouped by the page each match lives on. Plain
 // substring, no model, nothing written — the correlation primitive where a
 // false positive costs one glance.
-function searchView(r, sel = 0) {
-  if (!r) return "";
+/* One box, two speeds, and the difference is stated rather than implied.
+   Search is a substring match: instant, literal, reads nothing, writes nothing.
+   Ask across everything is one Claude call over every page at once, and it is
+   the only thing in the app that can answer a question no single page holds.
+   The offer stands even when nothing matched — "no page says kafka" is exactly
+   when you want somebody to have read them all. */
+function askAllStrip(q) {
+  return `<div class="askall">
+    <button class="go" id="askallbtn">Ask across everything</button>
+    <span class="dim">Claude reads every page and answers
+      “${esc(q)}” · one call, up to a minute or two</span></div>`;
+}
+
+function askAllCard(a) {
+  return `<div class="qa allans">
+    <div class="q">${esc(a.question)}
+      <button class="link" id="askallbtn">ask again</button>
+      <button class="link danger" data-delall="${a.id}">remove</button></div>
+    <div class="md" style="margin-top:10px">${md(a.answer)}</div>
+    <div class="when">Read every page${a.dropped
+      ? ` but not all of it — ${a.dropped} older update${
+          a.dropped === 1 ? " was" : "s were"} too long to send`
+      : ""} · ${esc(when(a.created_at))}${
+      a.stale ? ` · <span class="stale">${a.behind
+        ? `${a.behind} new update${a.behind === 1 ? "" : "s"} since this`
+        : "the updates it read have changed"}</span>` : ""}</div></div>`;
+}
+
+function searchView(r, sel = 0, ans = null) {
+  // The answer stands on its own: it is here before the results are, and it
+  // is still the answer to this question when nothing literal matched.
+  const head = ans ? askAllCard(ans) : askAllStrip(r ? r.q : "");
+  if (!r) return ans ? head : "";
   const q = r.q;
   if (!r.pages.length && !r.updates.length)
-    return `<div class="empty">Nothing says “${esc(q)}” yet.</div>`;
+    // Under an answer this is a footnote, not the news: you asked a question,
+    // and of course no page contains the sentence you typed.
+    return head + (ans
+      ? `<div class="dim" style="font-size:12.5px">No page contains those
+           words literally — the answer above is Claude reading them all.</div>`
+      : `<div class="empty">Nothing says “${esc(q)}” yet.</div>`);
   const targets = searchTargets(r);
   const here = targets[sel] ? targets[sel].id : null;
 
@@ -763,6 +814,7 @@ function searchView(r, sel = 0) {
     byPage.get(u.page.id).rows.push(u);
   }
   return `
+    ${head}
     ${targets.length ? `<div class="snav dim">
       <kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>↵</kbd> open
       <b>${esc(targets[sel] ? targets[sel].name : "")}</b>
@@ -789,8 +841,8 @@ async function home(kind) {
   // Two reads, one round trip each way. The agenda is its own call so a slow
   // or empty pane never holds up the list. Both kinds come back together so the
   // tab you are not on can still show its count.
-  const [{ projects }, ag] = await Promise.all([
-    api("/api/projects"), api("/api/agenda"),
+  const [{ projects }, ag, { answers: asked }] = await Promise.all([
+    api("/api/projects"), api("/api/agenda"), api("/api/asked"),
   ]);
   const byId = Object.fromEntries(projects.map(p => [p.id, p]));
   const people = kind === "person";
@@ -844,6 +896,17 @@ async function home(kind) {
             : "nothing yet"}</span>
         </a>`).join("") + `</div>`
         : `<div class="empty">${W.empty}</div>`}
+      ${asked.length ? `<div class="sec">
+        <h2>Asked across everything</h2>
+        <div class="card">${asked.slice(0, 8).map(a => `
+          <div class="arow"><button class="link" data-openall="${esc(a.question)}"
+            >${esc(a.question)}</button>
+            <span class="dim">${esc(when(a.created_at))}</span>
+            ${a.stale ? `<span class="stale">stale</span>` : ""}</div>`).join("")}</div>
+        <div class="dim" style="font-size:12px;margin-top:8px">
+          Answers, like briefs, are derived and disposable — the raw updates
+          are the record.</div>
+      </div>` : ""}
       <div class="dim" style="margin-top:22px;font-size:12px">
         Everything is one SQLite file.
         <button class="link" id="bak">Take a backup</button>
@@ -859,6 +922,37 @@ async function home(kind) {
     if (e.target.id === "ordrec" || e.target.id === "ordaz") {
       sortAZ = e.target.id === "ordaz";
       return rerender();
+    }
+    // Typing a question you already asked brings its answer back rather than
+    // spending a second call on it: the box matches on the question itself.
+    const open = e.target.closest("[data-openall]");
+    if (open) {
+      searchQ = open.dataset.openall;
+      searchRes = null; searchSel = 0;
+      if ($("#q")) $("#q").value = searchQ;
+      runSearch();
+      return drawSearch();
+    }
+    if (e.target.id === "askallbtn") {
+      const question = searchQ.trim();
+      if (question.length < 2) return;
+      return busy(e.target, "Reading", async () => {
+        await api("/api/ask-all", { question });
+        // Straight back through route: the answer is found by its question,
+        // so nothing has to be carried across the re-render but the box.
+        wantSearch = true;
+        await route();
+        toast("Read every page");
+      }, AI_LABEL.askAll());
+    }
+    const del = e.target.closest("[data-delall]");
+    if (del) {
+      try {
+        await api("/api/ask-all/delete", { id: +del.dataset.delall });
+        wantSearch = true;
+        await route();
+      } catch (err) { toast(err.message, true); }
+      return;
     }
     if (e.target.id === "bak") {
       // No spinner label from `busy`: this is a file copy, not a Claude call,
@@ -915,33 +1009,40 @@ async function home(kind) {
   // whole view: an innerHTML replace would take the focus out of the box on
   // every answer, and search is typed into, continuously.
   const drawSearch = () => {
-    const on = searchQ.trim().length >= 2;
-    $("#sout").innerHTML = on ? searchView(searchRes, searchSel) : "";
+    const q = searchQ.trim();
+    const on = q.length >= 2;
+    // An answer is keyed by the question that produced it, so retyping one
+    // shows what Claude already said instead of asking again.
+    const mine = on ? (asked.find(a => a.question === q) || null) : null;
+    $("#sout").innerHTML = on ? searchView(searchRes, searchSel, mine) : "";
     $("#browse").style.display = on ? "none" : "";
+  };
+
+  // Its own function so opening a past answer can run the same search the
+  // keystroke would have, rather than a second, slightly different one.
+  const runSearch = () => {
+    const q = searchQ.trim();
+    clearTimeout(searchTimer);
+    if (q.length < 2) { searchRes = null; return drawSearch(); }
+    // A store-wide LIKE per keystroke is one per letter of a word you are
+    // still in the middle of typing. The wait is short enough that a search
+    // still feels live; seq below keeps owning the ordering, because a
+    // debounce narrows the race and does not close it.
+    const seq = ++searchSeq;
+    searchTimer = setTimeout(async () => {
+      const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      if (seq !== searchSeq) return;   // a newer keystroke owns the screen
+      searchRes = r;
+      // A new answer is a new list; the old position meant a different page.
+      searchSel = 0;
+      drawSearch();
+    }, 150);
   };
 
   function wire() {
     $("#newbtn").onclick = add;
     $("#newname").onkeydown = e => { if (e.key === "Enter") add(); };
-    $("#q").oninput = e => {
-      searchQ = e.target.value;
-      const q = searchQ.trim();
-      clearTimeout(searchTimer);
-      if (q.length < 2) { searchRes = null; return drawSearch(); }
-      // A store-wide LIKE per keystroke is one per letter of a word you are
-      // still in the middle of typing. The wait is short enough that a search
-      // still feels live; seq below keeps owning the ordering, because a
-      // debounce narrows the race and does not close it.
-      const seq = ++searchSeq;
-      searchTimer = setTimeout(async () => {
-        const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
-        if (seq !== searchSeq) return;   // a newer keystroke owns the screen
-        searchRes = r;
-        // A new answer is a new list; the old position meant a different page.
-        searchSel = 0;
-        drawSearch();
-      }, 150);
-    };
+    $("#q").oninput = e => { searchQ = e.target.value; runSearch(); };
     $("#q").onkeydown = e => {
       if (e.key === "Escape") {
         clearTimeout(searchTimer); ++searchSeq;

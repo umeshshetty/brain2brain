@@ -160,6 +160,20 @@ CREATE TABLE IF NOT EXISTS page_agenda (
     read_updates      INTEGER NOT NULL,
     created_at        TEXT NOT NULL
 );
+
+-- A question asked of the whole notebook rather than of one page. It has no
+-- project_id for the same reason `agenda` has one row: the scope is
+-- everything, and that is the point of it. Kept, like the per-page answers,
+-- because re-asking costs another Claude call.
+CREATE TABLE IF NOT EXISTS store_answers (
+    id                INTEGER PRIMARY KEY,
+    question          TEXT NOT NULL,
+    answer            TEXT NOT NULL,
+    through_update_id INTEGER NOT NULL DEFAULT 0,
+    read_updates      INTEGER NOT NULL DEFAULT 0,
+    dropped           INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL
+);
 """
 
 
@@ -282,6 +296,10 @@ def _migrate(conn) -> list[str]:
         conn.execute("ALTER TABLE summaries ADD COLUMN read_updates INTEGER NOT NULL"
                      " DEFAULT 0")
         done.append("summaries.read_updates")
+    if _has(conn, "store_answers") and "dropped" not in _cols(conn, "store_answers"):
+        conn.execute("ALTER TABLE store_answers ADD COLUMN dropped INTEGER NOT NULL"
+                     " DEFAULT 0")
+        done.append("store_answers.dropped")
     if _has(conn, "agenda") and "read_updates" not in _cols(conn, "agenda"):
         conn.execute("ALTER TABLE agenda ADD COLUMN read_updates INTEGER NOT NULL DEFAULT 0")
         done.append("agenda.read_updates")
@@ -967,6 +985,146 @@ def agenda_context() -> dict:
             "newest": conn.execute("SELECT ifnull(max(id), 0) FROM updates").fetchone()[0],
             "total": conn.execute("SELECT count(*) FROM updates").fetchone()[0],
         }
+    finally:
+        conn.close()
+
+
+EVERYTHING_PER_PAGE = 150
+
+# A second cap, on size rather than on count, because this read is the only one
+# that sends every page at once and an update here is whatever you pasted — a
+# line, or a whole transcript. Measured on a real store: 27 updates came to
+# 160,000 characters, so a count alone is no guide to what will fit. Whatever
+# does not fit is counted and printed, like every other cap in this app.
+EVERYTHING_CHARS = 400_000
+
+
+def everything_context(per_page: int = EVERYTHING_PER_PAGE,
+                       chars: int = EVERYTHING_CHARS) -> dict:
+    """Every page at once, in full, for the one read that crosses all of them.
+
+    Its own function rather than the agenda's, because the two reads want
+    different things. The agenda wants enough of each project to spot a date
+    and has to stay cheap enough to rebuild on a whim. This one is handed a
+    question and should answer it out of everything there is, so the budget per
+    page is larger and each page's `about` comes with it — who a page is to you
+    is most of what decides whether an answer about it is any use.
+
+    Own updates only. A guest is the same row read from its other home, and
+    sending it twice would let one sentence look like two people saying it.
+    The link is named on the update instead: a connection you made by hand is
+    worth more than one the model has to infer, and naming it costs a word.
+    """
+    conn = connect()
+    try:
+        pages, dropped = [], 0
+        for p in conn.execute("SELECT id, name, kind, about FROM projects"
+                              " ORDER BY name COLLATE NOCASE"):
+            n = conn.execute("SELECT count(*) FROM updates WHERE project_id = ?",
+                             (p["id"],)).fetchone()[0]
+            rows = _rows(conn.execute("""
+                SELECT u.id, u.body, u.created_at, t.name AS topic
+                FROM updates u LEFT JOIN topics t ON t.id = u.topic_id
+                WHERE u.project_id = ? ORDER BY u.created_at DESC, u.id DESC LIMIT ?
+            """, (p["id"], per_page)))
+            dropped += max(0, n - per_page)
+            by_id = {u["id"]: u for u in rows}
+            for u in rows:
+                u["links"] = []
+                u["size"] = len(u["body"])
+            for r in conn.execute("""
+                    SELECT l.update_id, q.name FROM update_links l
+                    JOIN projects q ON q.id = l.project_id
+                    WHERE l.update_id IN (SELECT id FROM updates WHERE project_id = ?)
+                    ORDER BY q.name COLLATE NOCASE
+            """, (p["id"],)):
+                if r["update_id"] in by_id:
+                    by_id[r["update_id"]]["links"].append(r["name"])
+            pages.append({"id": p["id"], "name": p["name"], "kind": p["kind"],
+                          "about": p["about"], "updates": rows})
+
+        # Spent newest-first, one update per page per pass, so a page that
+        # pastes transcripts cannot eat the budget before a quiet page has
+        # given up its one line. When a page's next update will not fit, that
+        # page stops there rather than skipping it for a shorter one further
+        # back: a hole in the middle of a page's chronology is worse than a
+        # shorter chronology, because the prompt reads each page as a story.
+        spent, stopped, kept = 0, set(), {p["id"]: [] for p in pages}
+        for i in range(max((len(p["updates"]) for p in pages), default=0)):
+            for p in pages:
+                if p["id"] in stopped or i >= len(p["updates"]):
+                    continue
+                u = p["updates"][i]
+                if spent + u["size"] > chars:
+                    stopped.add(p["id"])
+                    continue
+                spent += u["size"]
+                kept[p["id"]].append(u)
+        for p in pages:
+            dropped += len(p["updates"]) - len(kept[p["id"]])
+            # Oldest first, so the model reads each page in the order it
+            # happened and "recently" is the end of the text.
+            p["updates"] = list(reversed(kept[p["id"]]))
+        return {
+            "pages": pages,
+            "dropped": dropped,
+            "newest": conn.execute("SELECT ifnull(max(id), 0) FROM updates").fetchone()[0],
+            "total": conn.execute("SELECT count(*) FROM updates").fetchone()[0],
+        }
+    finally:
+        conn.close()
+
+
+def save_store_answer(question: str, answer: str, through: int, read: int,
+                      dropped: int = 0) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO store_answers (question, answer, through_update_id,"
+                " read_updates, dropped, created_at) VALUES (?,?,?,?,?,?)",
+                (question.strip(), answer, through, read, dropped, now()))
+        return {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+def store_answers(limit: int = 20) -> list[dict]:
+    """Newest first, each saying whether the store has moved under it.
+
+    Same two axes as every other cached read here: the watermark notices the
+    set growing, the count notices it changing. An answer that quoted an update
+    you have since deleted should say so rather than reading as though it still
+    holds.
+    """
+    conn = connect()
+    try:
+        newest = conn.execute("SELECT ifnull(max(id), 0) FROM updates").fetchone()[0]
+        total = conn.execute("SELECT count(*) FROM updates").fetchone()[0]
+        out = []
+        for r in _rows(conn.execute(
+                "SELECT id, question, answer, through_update_id, read_updates,"
+                " dropped, created_at FROM store_answers ORDER BY id DESC LIMIT ?",
+                (limit,))):
+            behind = conn.execute(
+                "SELECT count(*) FROM updates WHERE id > ?",
+                (r["through_update_id"],)).fetchone()[0]
+            r["behind"] = behind
+            r["stale"] = bool(behind) or r["read_updates"] != total
+            out.append(r)
+        return out
+    finally:
+        conn.close()
+
+
+def delete_store_answer(aid: int) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            n = conn.execute("DELETE FROM store_answers WHERE id = ?", (aid,)).rowcount
+        if not n:
+            raise ValueError("no such answer")
+        return {"deleted": aid}
     finally:
         conn.close()
 
