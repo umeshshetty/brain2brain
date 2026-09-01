@@ -640,6 +640,21 @@ def delete_project(pid: int) -> dict:
         conn.close()
 
 
+def page_head(pid: int) -> dict:
+    """Just a page's name and kind. `project()` reads its whole history, which
+    is far more than a write needs when all it has to do is say where the note
+    landed."""
+    conn = connect()
+    try:
+        r = conn.execute("SELECT id, name, kind FROM projects WHERE id = ?",
+                         (pid,)).fetchone()
+        if not r:
+            raise ValueError("no such project or person")
+        return dict(r)
+    finally:
+        conn.close()
+
+
 def project(pid: int) -> dict:
     """Everything the project page needs, in one read.
 

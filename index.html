@@ -310,6 +310,15 @@
                line-height:1; color:var(--dim); cursor:pointer; }
   .lk button:hover { color:var(--warn); }
   .lks { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  /* Capture from the home view. The first tag is where the text lives and the
+     rest see it as a guest — the same one-note-never-copied rule linking has
+     always had — so the chips say which is which here, rather than leaving you
+     to find out on the pages afterwards. */
+  .lk.home { border-color:var(--accent); }
+  .lk i { font-style:normal; font-size:10px; letter-spacing:.05em;
+          text-transform:uppercase; color:var(--dim); }
+  .lk button.hb:hover { color:var(--accent); }
+  .nwhere { font-size:12.5px; line-height:1.5; margin-top:9px; }
   select.addlk { font:inherit; font-size:12px; padding:1px 4px; border-radius:5px;
                  color:var(--dim); background:var(--card);
                  border:1px dashed var(--line); max-width:150px; }
@@ -680,6 +689,11 @@ let meOpen = false;
    is a thing worth knowing, not a thing you owe anyone, and a list of what you
    owe is worth less with those mixed in. */
 let todoIns = false;
+// A thought caught on the home view, and the pages it is about. Module state
+// rather than the DOM's, because opening an item's form in the Now pane
+// re-renders the whole shell and a half-typed idea must not be a casualty of
+// that. Cleared only by saving it.
+let noteDraft = "", noteTags = [];
 /* Whether the "read what needs reading" button also covers pages whose pane is
    merely behind, on top of the ones never read at all. Off: an unread page is
    a hole in the list, a stale one is only out of date, and they are not worth
@@ -1015,6 +1029,55 @@ async function home(kind) {
     else if (g === "today") d.now++;
   }
 
+  /* Capture, from the page you land on rather than the page it belongs to.
+     A thought does not arrive knowing whose it is, and walking to the right
+     page first is exactly the friction that loses it — so the box is here and
+     the filing is a tag, or nothing at all.
+
+     Tags are ordinary links, which is why this needed no new table and no new
+     idea: the first page you tag is the note's home, the rest are the guests
+     `update_links` has always held. Tag nothing and it lands in the Inbox,
+     the same holding page `app.py add` with no -p uses. */
+  // Recomputed per render rather than at load, like the project page's own:
+  // a tab left open overnight must not still offer yesterday as "today".
+  const TODAY = today();
+  const tagged = () => noteTags.map(id => byId[id]).filter(Boolean);
+  const noteBox = () => {
+    const on = tagged();
+    return `<div class="card" style="margin-bottom:14px">
+      <textarea id="nbody" rows="3"
+        placeholder="A thought, an idea, something someone said — tag whoever and whatever it is about"
+        >${esc(noteDraft)}</textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="go" id="nadd">Note it</button>
+        <label class="dim" style="font-size:13px">on
+          <input type="date" id="non" max="${esc(TODAY)}" value="${esc(TODAY)}"></label>
+        <span class="dim" style="font-size:13px;margin-left:auto"
+          ><kbd>⌘</kbd>+<kbd>↵</kbd></span>
+      </div>
+      <div class="lks" style="margin-top:10px">
+        <span class="dim" style="font-size:13px">about</span>
+        ${on.map((o, i) => `<span class="lk${o.kind === "person" ? " person" : ""}${
+          i ? "" : " home"}">${i ? "" : `<i>filed</i>`}<b>${esc(o.name)}</b>
+          ${i ? `<button class="hb" data-nhome="${o.id}"
+            title="file it here instead">⌂</button>` : ""}
+          <button data-nuntag="${o.id}" title="untag">×</button></span>`).join("")}
+        <select class="addlk" id="ntag"><option value="">+ tag…</option>${
+          projects.filter(o => !noteTags.includes(o.id)).map(o =>
+            `<option value="${o.id}">${esc(o.name)}${
+              o.kind === "person" ? "  (person)" : ""}</option>`).join("")}</select>
+      </div>
+      <div class="sug" id="nsug"></div>
+      <div class="nwhere dim">${on.length > 1
+        ? `The text lives on <b>${esc(on[0].name)}</b>. ${on.slice(1).map(o =>
+            esc(o.name)).join(", ")} see${on.length === 2 ? "s" : ""} it as a
+           guest — one note, linked, never copied.`
+        : on.length ? `Filed on <b>${esc(on[0].name)}</b>.`
+        : `Nothing tagged, so it goes to the <b>Inbox</b> — captured now, filed
+           when you know where.`}</div>
+    </div>`;
+  };
+
   const nProj = projects.length - projects.filter(p => p.kind === "person").length;
   const nPeep = projects.length - nProj;
 
@@ -1070,6 +1133,7 @@ async function home(kind) {
       <input type="text" id="q" class="search" autocomplete="off" spellcheck="false"
         placeholder="Search everything — every update on every page   ·   press /"
         value="${esc(searchQ)}">
+      ${noteBox()}
       <div id="sout"></div>
       <div id="browse">
       <div class="chips">
@@ -1135,6 +1199,46 @@ async function home(kind) {
   app.onclick = async e => {
     if (e.target.id === "ordrec" || e.target.id === "ordaz") {
       sortAZ = e.target.id === "ordaz";
+      return rerender();
+    }
+    // ---- a thought, and the pages it is about
+    if (e.target.id === "nadd") {
+      const body = ($("#nbody").value || "").trim();
+      if (!body) return $("#nbody").focus();
+      const on = $("#non") ? $("#non").value : "";
+      const tags = noteTags.slice();
+      return busy(e.target, "Saving", async () => {
+        const r = await api("/api/update",
+          { project_id: tags[0] || null, body, links: tags.slice(1), on });
+        noteDraft = ""; noteTags = [];
+        await route();
+        const dated = on && on !== TODAY ? ` · dated ${dayLabel(on)}` : "";
+        // Where it landed, always — an untagged note is filed somewhere you
+        // never named, and a save that does not say where is a note you have
+        // to go looking for.
+        const rest = tags.length > 1
+          ? ` · also on ${tags.slice(1).map(id => byId[id].name).join(", ")}` : "";
+        toast(`Saved to ${r.page.name}${rest}${dated}${
+          r.made_inbox ? " · made the Inbox to hold it" : ""}`);
+      });
+    }
+    const nh = e.target.closest("[data-nhome]");
+    if (nh) {                      // promote a tag to be the note's home
+      const id = +nh.dataset.nhome;
+      noteDraft = $("#nbody").value;
+      noteTags = [id, ...noteTags.filter(x => x !== id)];
+      return rerender();
+    }
+    const nu = e.target.closest("[data-nuntag]");
+    if (nu) {
+      noteDraft = $("#nbody").value;
+      noteTags = noteTags.filter(x => x !== +nu.dataset.nuntag);
+      return rerender();
+    }
+    const np = e.target.closest("[data-npend]");
+    if (np) {
+      noteDraft = $("#nbody").value;
+      noteTags = [...noteTags, +np.dataset.npend];
       return rerender();
     }
     if (e.target.id === "meedit") { meOpen = true; return rerender(); }
@@ -1268,6 +1372,34 @@ async function home(kind) {
 
   function wire() {
     $("#newbtn").onclick = add;
+    // ---- the note box
+    //
+    // The draft is kept in module state on every keystroke so that a re-render
+    // — opening an act form in the pane, promoting a tag — cannot eat it.
+    const nsuggest = () => {
+      // The same substring match the per-page composer offers, pointed at the
+      // whole store instead of one page: no Claude call, whole words only, and
+      // nothing tagged until you press it. Names already tagged drop out.
+      const hit = mentions(noteDraft, projects, null, noteTags);
+      $("#nsug").innerHTML = hit.length
+        ? `<span>mentions</span>` + hit.slice(0, 6).map(o =>
+            `<button class="link" data-npend="${o.id}">${esc(o.name)} — tag?</button>`).join("")
+        : "";
+    };
+    $("#nbody").oninput = e => { noteDraft = e.target.value; nsuggest(); };
+    $("#nbody").onkeydown = e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault(); noteDraft = e.target.value; $("#nadd").click();
+      }
+    };
+    $("#ntag").onchange = e => {
+      const id = +e.target.value;
+      if (!id) return;
+      noteDraft = $("#nbody").value;
+      noteTags = [...noteTags, id];
+      rerender();
+    };
+    nsuggest();
     $("#newname").onkeydown = e => { if (e.key === "Enter") add(); };
     $("#q").oninput = e => { searchQ = e.target.value; runSearch(); };
     $("#q").onkeydown = e => {
@@ -1305,7 +1437,12 @@ async function home(kind) {
   }
   wire();
   if (wantSearch) { wantSearch = false; if ($("#q")) $("#q").focus(); }
-  else if (openAct === null && !meOpen) $("#newname").focus();
+  else if (openAct === null && !meOpen) {
+    // Back to the thought you were in the middle of, with the caret at the
+    // end of it — tagging a page must not cost you your place in the sentence.
+    const n = $("#nbody");
+    n.focus(); n.setSelectionRange(n.value.length, n.value.length);
+  }
 
   // Only a pane that already exists and has been overtaken by the calendar.
   // A pane you have never built is a deliberate first act, and an empty store

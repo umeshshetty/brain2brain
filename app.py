@@ -127,12 +127,24 @@ def post_update(b):
     links = b.get("links") or []
     if not isinstance(links, list) or len(links) > 20:
         raise ValueError("bad links")
+    # No page at all is the home composer's untagged case, and it lands in the
+    # Inbox — made on demand, the same one `app.py add` with no -p uses. One
+    # holding pen, whether the thought arrived through the tab or a pipe.
+    made = False
+    if b.get("project_id") in (None, "", 0):
+        pid, made = _inbox()
+    else:
+        pid = _int(b.get("project_id"), "project")
     # `on` is the day it happened, when that is not today. The store checks
     # the shape and refuses a future one — see store.stamp.
-    return store.add_update(_int(b.get("project_id"), "project"),
-                            b.get("body") or "", b.get("topic_id"),
-                            [_int(x, "link") for x in links],
-                            on=(b.get("on") or "").strip() or None)
+    u = store.add_update(pid, b.get("body") or "", b.get("topic_id"),
+                         [_int(x, "link") for x in links if _int(x, "link") != pid],
+                         on=(b.get("on") or "").strip() or None)
+    # The page it landed on goes back, because the caller may not have chosen
+    # it: an untagged note is filed somewhere it never named, and a save that
+    # does not say where is a note you have to go looking for.
+    return {**u, "project_id": pid, "made_inbox": made,
+            "page": store.page_head(pid)}
 
 
 def post_link(b):

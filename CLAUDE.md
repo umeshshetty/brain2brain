@@ -378,6 +378,52 @@ step.
 `--on` is the same `stamp()` the composer uses, with the same refusal of
 tomorrow (see *The day it happened*).
 
+## Catching a thought
+
+**User request, 2026-09-01.** *"I also need a way to supply any thoughts or
+ideas or notes from the central page and tag any people, project."*
+
+A thought does not arrive knowing whose it is. Until this, every way into the
+store made you decide first — the composer is on a page, so you had to pick the
+page before you could write the sentence down, and *that* is the friction the
+whole design says to refuse. The box is now the first thing on the home view,
+above the tabs and the page list, and the caret lands in it.
+
+**A tag is an ordinary link, which is why this needed no new table and no new
+idea.** The first page you tag is the note's home — the update lives there, as
+that page's own text. The rest are the guests `update_links` has always held:
+one row, linked, never copied, read-only where it visits and stamped with where
+it came from. Tag a project and a person and the note is on the project, and on
+the person's page as *from GoBMP* with a link back. Verified end to end.
+
+**Which page the text lives on is said before you save, not discovered
+afterwards.** Only the home page can re-file or delete an update, and a guest
+belongs to no topic — so which of your tags is the home is a real difference,
+and burying it would mean finding out by going to the pages. The first chip is
+marked *filed*, the line beneath reads *"The text lives on **GoBMP**. Priya
+sees it as a guest — one note, linked, never copied"*, and `⌂` on any other
+chip promotes it without costing you the sentence you were typing.
+
+**Tag nothing and it goes to the Inbox** — the same page `app.py add` with no
+`-p` makes on demand, found the same way, so a thought typed into the tab and
+one piped in from a shell land in one holding pen rather than two. The toast
+always says where it went, because an untagged note is filed somewhere you
+never named.
+
+**The mention nudge is the same substring match, pointed at the whole store.**
+Type a name you have a page for and it offers *"Priya — tag?"*. Whole words
+only, on every keystroke because it is not a model, and nothing is tagged until
+you press it — the same distance from an entity resolver that every other
+read-time correlation here keeps. It draws into its own node, because
+re-rendering the page under a live textarea would pull the cursor out mid-word.
+
+| | |
+|---|---|
+| **The draft is module state** | Opening an item's form in the Now pane re-renders the whole shell, and a half-typed idea must not be a casualty of that. Tagging, promoting and untagging all re-render, and all keep the text. |
+| **It arrives unfiled** | No topic picker. A topic is only meaningful inside the project that owns it, and capture is cheap while filing is a decision — the same split *move to…* exists for. |
+| **The day it happened** | The same date field the page composer has, refusing tomorrow the same way. |
+| **A page cannot be a guest on itself** | However the tags arrived. The route drops it rather than failing. |
+
 ## Linking
 
 **User request, 2026-08-28.** Work on a project is work with people, and a 1-1
