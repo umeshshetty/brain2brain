@@ -77,6 +77,16 @@
   .allans { border:1px solid var(--accent); border-radius:10px;
             padding:14px 16px; margin:0 0 18px; border-top-width:1px; }
   .qa.allans .q button { visibility:visible; }
+  /* Who the reader is. Loud while it is empty, because an app that does not
+     know who you are writes every brief for nobody in particular; one dim
+     line once it is filled, because then it has done its job. */
+  .menudge { border-style:dashed; }
+  .menudge b { display:block; margin-bottom:4px; }
+  .menudge .dim { display:block; font-size:13px; line-height:1.5;
+                  margin-bottom:11px; }
+  .meline { font-size:12.5px; margin:0 0 14px; display:flex; gap:8px;
+            align-items:baseline; }
+  .meline span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .arow { display:flex; gap:10px; align-items:baseline; padding:5px 0;
           border-bottom:1px solid var(--line); font-size:13.5px; }
   .arow:last-child { border-bottom:none; }
@@ -422,6 +432,34 @@ const ago = iso => {
    spin. These must read the same on both sides — the server writes them (see
    _ai in app.py) and the page compares its own against what comes back, so
    that a call never reports itself as the thing it is waiting for. */
+/* Concrete on purpose. "Tell it about yourself" gets you a job title; the
+   three things that actually change a brief are what you own, who you answer
+   to, and what you want led with. */
+const ME_HINT = `I lead the platform SRE team — on-call readiness, the tooling \
+the network org runs on, and the Q4 preview.
+
+My skip-level is the VP of Network Ops. I depend on the network org for data \
+I do not control, and I am accountable for anything my team ships breaking.
+
+Lead with what is waiting on me, and always say who I owe an answer to.`;
+
+/* What saving your profile cost, in words. Every interpretation in the store
+   was composed for whoever you used to be, so it goes — and a count is how you
+   decide whether to spend the calls rebuilding now or leave it. */
+const CLEARED_WORDS = {
+  summaries:   n => `${n} brief${n === 1 ? "" : "s"}`,
+  preps:       n => `${n} meeting brief${n === 1 ? "" : "s"}`,
+  page_agenda: n => `${n} page pane${n === 1 ? "" : "s"}`,
+  agenda:      () => "the Now pane",
+};
+const cleared = c => {
+  const parts = Object.keys(CLEARED_WORDS)
+    .filter(k => c && c[k]).map(k => CLEARED_WORDS[k](c[k]));
+  if (!parts.length) return "";
+  const last = parts.pop();
+  return ` · dropped ${parts.length ? parts.join(", ") + " and " : ""}${last}`;
+};
+
 const AI_LABEL = {
   now:    () => "the Now pane",
   dates:  p  => `${p.name}'s dates`,
@@ -561,6 +599,9 @@ let findQ = "", findKey = "";
    with nothing to aim at. A–Z gives every page a fixed place you can learn.
    Not stored anywhere: it is how you are looking right now, not a setting. */
 let sortAZ = false;
+// Whether the "about you" box is open. Module state, not a URL: it is a thing
+// you are doing right now, like the sort order, not a place you keep.
+let meOpen = false;
 
 /* One row of either pane.
  *
@@ -841,8 +882,8 @@ async function home(kind) {
   // Two reads, one round trip each way. The agenda is its own call so a slow
   // or empty pane never holds up the list. Both kinds come back together so the
   // tab you are not on can still show its count.
-  const [{ projects }, ag, { answers: asked }] = await Promise.all([
-    api("/api/projects"), api("/api/agenda"), api("/api/asked"),
+  const [{ projects }, ag, { answers: asked }, me] = await Promise.all([
+    api("/api/projects"), api("/api/agenda"), api("/api/asked"), api("/api/me"),
   ]);
   const byId = Object.fromEntries(projects.map(p => [p.id, p]));
   const people = kind === "person";
@@ -854,6 +895,40 @@ async function home(kind) {
     : mine;
   const nProj = projects.length - projects.filter(p => p.kind === "person").length;
   const nPeep = projects.length - nProj;
+
+  // The store-level counterpart of a page's `about`: who *you* are, read by
+  // every prompt in the app. Three states in one slot — a nudge while it is
+  // empty, the editor while it is open, one dim line once it is written.
+  const meBlock = () => {
+    if (meOpen) return `
+      <div class="card about open" style="margin-bottom:14px">
+        <div class="row" style="align-items:baseline"><h3>About you</h3></div>
+        <div class="dim">Context, and the widest kind there is: it is read by
+          every brief, both panes, prep and every Ask. It decides what gets
+          picked out of your notes and how you are addressed — never what those
+          notes say. Yours, stored as typed; no model writes it.</div>
+        <textarea id="metext" rows="8"
+          placeholder="${esc(ME_HINT)}">${esc(me.about || "")}</textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="go" id="mesave">Save</button>
+          <button class="link" id="mecancel">cancel</button>
+          <span class="dim" style="margin-left:auto;font-size:13px"
+            >saving drops every brief written for whoever you were</span>
+        </div>
+      </div>`;
+    if (!(me.about || "").trim()) return `
+      <div class="card about empty menudge" style="margin-bottom:14px">
+        <b>Brain does not know who you are.</b>
+        <span class="dim">So every brief it writes is addressed to nobody in
+          particular. Say what you own, who you answer to, and what a useful
+          answer looks like — it is read by every brief, both panes, prep and
+          every Ask.</span>
+        <button class="go" id="meedit">Tell it</button>
+      </div>`;
+    return `<div class="meline dim"><b>About you</b>
+      <span>${esc(me.about.replace(/\s+/g, " "))}</span>
+      <button class="link" id="meedit" style="margin-left:auto">edit</button></div>`;
+  };
 
   const W = people
     ? { unit: "note", head: "People", add: "Name of the person",
@@ -882,6 +957,7 @@ async function home(kind) {
           <button class="chip ord${sortAZ ? "" : " on"}" id="ordrec">Recent</button>
           <button class="chip ord${sortAZ ? " on" : ""}" id="ordaz">A–Z</button>` : ""}
       </div>
+      ${meBlock()}
       <div class="card row">
         <input type="text" id="newname" placeholder="${W.add}" maxlength="120" autocomplete="off">
         <button class="go" id="newbtn">Add</button>
@@ -922,6 +998,19 @@ async function home(kind) {
     if (e.target.id === "ordrec" || e.target.id === "ordaz") {
       sortAZ = e.target.id === "ordaz";
       return rerender();
+    }
+    if (e.target.id === "meedit") { meOpen = true; return rerender(); }
+    if (e.target.id === "mecancel") { meOpen = false; return rerender(); }
+    if (e.target.id === "mesave") {
+      const about = $("#metext").value;
+      return busy(e.target, "Saving", async () => {
+        const r = await api("/api/me", { about });
+        meOpen = false;
+        await route();
+        // Said out loud, with the count. Seventeen briefs going quiet would
+        // read as a bug, and the number is how you decide whether to rebuild.
+        toast(r.changed ? `Saved${cleared(r.cleared)}` : "No change");
+      });
     }
     // Typing a question you already asked brings its answer back rather than
     // spending a second call on it: the box matches on the question itself.
@@ -1073,11 +1162,12 @@ async function home(kind) {
       await route();
       toast("Now updated");
     }, AI_LABEL.now());
+    if (meOpen && $("#metext")) $("#metext").focus();
     if ($("#actnote")) $("#actnote").focus();
   }
   wire();
   if (wantSearch) { wantSearch = false; if ($("#q")) $("#q").focus(); }
-  else if (openAct === null) $("#newname").focus();
+  else if (openAct === null && !meOpen) $("#newname").focus();
 
   // Only a pane that already exists and has been overtaken by the calendar.
   // A pane you have never built is a deliberate first act, and an empty store

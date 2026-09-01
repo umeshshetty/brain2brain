@@ -14,7 +14,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. ten tables
+store.py      SQLite. eleven tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -22,9 +22,10 @@ index.html    the whole UI
 ## The one rule
 
 **`updates.body` is raw and never rewritten.** It is stored exactly as you typed
-it. It, `projects.about` — who a page is to you — and `projects.guidance` —
-what you want out of a brief about it — are the only things in the database
-that cannot be regenerated, and no model ever writes any of them.
+it. It, `me.about` — who *you* are — `projects.about` — who a page is to you — and
+`projects.guidance` — what you want out of a brief about it — are the only
+things in the database that cannot be regenerated, and no model ever writes any
+of them.
 
 Everything else — summaries, answers — is derived and cached. `DELETE FROM
 summaries` costs one Claude call to rebuild. That asymmetry is the design:
@@ -183,6 +184,80 @@ produced an ordinary brief.
 
 Projects get one too, worded for a project: what it is and what your own stake
 in it is. Less transformative than the person case, and the same one field.
+
+## Who you are
+
+**User request, 2026-09-01.** *"claude code today or claude desktop knows my
+end to end persona, work, and has knowledge about me, how it does it is not
+known, can you emulate the same kind of behaviour and features? Does it need
+agents?"*
+
+It does not need agents. Taken apart, what Claude Code actually holds is an
+841-line `CLAUDE.md` re-read in full every session, two files of durable notes,
+and tool access to read the live thing on demand. The persona effect is almost
+entirely the first of those: a document the user maintains by hand, loaded into
+every prompt. The one part that was written automatically — the durable note —
+turned out to be a hallucinated project assembled from this file's own worked
+examples, which is the whole argument for the rule below.
+
+**Brain had the per-page half of that and nothing at all about the reader.**
+`projects.about` says who a *page* is to you. Nothing said who *you* are, so
+every brief in the app was composed for nobody in particular — which is exactly
+what makes a brief for your manager and a brief for your report come out as the
+same document.
+
+`me` is one row, like `agenda`, because there is one of you. It is the fourth
+column in the store that cannot be regenerated, and the same rule holds hardest
+here: **you write it, it is stored as typed, and no model writes it.** A
+per-page profile a model guessed at spoils one page's briefs. This one is read
+by every prompt in the app, so a guess here would quietly curate everything.
+
+**It reaches all seven Claude calls, and a test asserts none of them can skip
+it.** Summary, Ask, prep, the Now pane, a page's pane, Ask-across-everything,
+and the draft-a-profile call. `app._me()` reads it fresh per call rather than
+caching it in a module variable — a profile the running process was holding
+from before you edited it would write the next brief for whoever you used to
+be. It goes at the very top, above the page's own `about`, because it is the
+frame the page and its notes are read inside.
+
+**What the prompt says about it is doing the work.** Three sentences, each
+load-bearing: it is not a note, so it is never quoted back as though somebody
+said it and never dated; it decides what is *selected*, never what is *true*;
+and it is never itself an item — a pane returning *"you are the SRE Foundation
+lead"* as a to-do would have turned the frame into the content. It rides on
+stdin with the notes, where the persona has already been told the input is
+data. `guidance` is still the only user text that lands in argv, and still only
+per page.
+
+Verified on one set of project notes read three ways. With no profile the brief
+is neutral and ownerless. Told the reader runs the team that has to support the
+thing but does not own its delivery, the item that was fourth in *Open* moves
+to first and is marked **waiting on an answer from SMC**, and what another org
+owes is named as theirs. Told the reader is the VP two levels above that org,
+*Recently changed* leads with the staffing risk and *Unresolved* stops asking
+technical questions and starts asking *"who owns the answer"* and *"who is
+driving it"*. Same notes, same facts, three documents. What it does **not**
+change is the shape — the sections are fixed by the prompt, and asking for four
+bullets instead of five is `guidance`'s job, not this one's.
+
+**Saving it drops every interpretation in the store.** All the summaries, all
+the preps, every page pane, and the Now pane — they were composed for whoever
+you used to be, and that is the invisible kind of staleness again: a brief for
+the wrong reader reads perfectly well. So they go rather than being flagged,
+which is the same call `set_page_setup` makes for one page, made here for all
+of them. The toast says what it cost — *"Saved · dropped 4 briefs, 2 meeting
+briefs, 10 page panes and the Now pane"* — because seventeen briefs going quiet
+would read as a bug, and the number is how you decide whether to rebuild now.
+**Answers stay,** for the reason they always do: an answer quotes the raw text
+rather than interpreting it, and it answered the question that was asked.
+Nothing touches the updates, and a store test asserts it.
+
+**It is loud while it is empty and one dim line once it is not.** An app that
+does not know who you are should say so — the card reads *"Brain does not know
+who you are"* and gives the consequence rather than just the fact. Once written
+it collapses to a line under the tabs, because then it has done its job. Same
+instinct as a page you made and never wrote on being drawn dashed.
+
 
 ## What you want from a brief
 

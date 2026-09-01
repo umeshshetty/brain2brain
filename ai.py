@@ -81,6 +81,40 @@ def run(instruction: str, context: str) -> str:
     return out
 
 
+def reader(text: str | None) -> list[str]:
+    """Who the reader is, at the very top of every prompt in the app.
+
+    `about` says who one page is to them. This says who they are, and it goes
+    above it, because it is the frame both the page and its notes are read
+    inside: "the SMC staffing gap" is a different sentence to the person
+    accountable for SMC than to someone watching it from another org.
+
+    Three things are said about it in the prompt itself, and each is load-
+    bearing. It is not a note, so it is never quoted back as though someone
+    said it and never dated. It changes what is *selected*, never what is
+    *true*, which is the same rule `about` carries and the reason a profile
+    cannot conjure a fact the updates do not have. And it is never itself an
+    item — a pane that returned "you are the SRE Foundation lead" as a to-do
+    would have turned the frame into the content.
+
+    It rides on stdin with the notes, where the persona has already been told
+    the input is data. Only `guidance` goes into argv, and only per page.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    return ["# Who the reader is",
+            "",
+            "The reader wrote this about themselves. It is standing context,"
+            " not a note, not something anyone said, and not an item: never"
+            " quote it, never date it, never return it as a thing to do.",
+            "",
+            "Let it decide what is worth telling them and how to address them."
+            " It cannot make anything true that the notes do not say.",
+            "",
+            text, "", "---", ""]
+
+
 def about(kind: str, text: str | None) -> list[str]:
     """The reader's own words about who this page is to them, if they wrote any.
 
@@ -103,7 +137,7 @@ def about(kind: str, text: str | None) -> list[str]:
 
 
 def context(project: str, updates: list[dict], kind: str = "project",
-            profile: str | None = None) -> str:
+            profile: str | None = None, me: str = "") -> str:
     """Raw updates, oldest first, each stamped with its date.
 
     Oldest first so the model reads the story in the order it happened, and so
@@ -116,7 +150,7 @@ def context(project: str, updates: list[dict], kind: str = "project",
     sentence with no mouth attached to it, and a person's brief that shows what
     they said about a project reads as one conversation rather than two.
     """
-    lines = about(kind, profile) + [f"# Project: {project}", ""]
+    lines = reader(me) + about(kind, profile) + [f"# Project: {project}", ""]
     for u in updates:
         head = u["created_at"][:16].replace("T", " ")
         via = u.get("via")
@@ -239,15 +273,16 @@ say the updates do not support it rather than filling the gap."""
 
 
 def summarize(project: str, updates: list[dict], kind: str = "project",
-              profile: str | None = None, wants: str | None = None) -> str:
+              profile: str | None = None, wants: str | None = None,
+              me: str = "") -> str:
     return run(guided(PERSON_SUMMARY_INSTRUCTION if kind == "person"
                       else SUMMARY_INSTRUCTION, wants),
-               context(project, updates, kind, profile))
+               context(project, updates, kind, profile, me))
 
 
 def ask(project: str, updates: list[dict], question: str, kind: str = "project",
-        profile: str | None = None) -> str:
-    ctx = (context(project, updates, kind, profile)
+        profile: str | None = None, me: str = "") -> str:
+    ctx = (context(project, updates, kind, profile, me)
            + f"\n---\n\n# Question\n\n{question}\n")
     noun = "conversations with one person" if kind == "person" else "one project"
     return run(ASK_INSTRUCTION.replace("one project", noun), ctx)
@@ -299,7 +334,8 @@ them; it is never evidence, never dated, and never quoted as though someone
 said it."""
 
 
-def everything_context(pages: list[dict], question: str, today: str = "") -> str:
+def everything_context(pages: list[dict], question: str, today: str = "",
+                       me: str = "") -> str:
     """Every page, in full, as one document.
 
     Headed by name rather than by id, unlike the agenda's context. The agenda
@@ -312,7 +348,7 @@ def everything_context(pages: list[dict], question: str, today: str = "") -> str
     single remark comes to look like two people saying the same thing, which is
     exactly the error this read exists to avoid making.
     """
-    lines = []
+    lines = reader(me)
     for p in pages:
         head = "Person" if p.get("kind") == "person" else "Project"
         lines.append(f"# {head}: {p['name']}")
@@ -340,8 +376,9 @@ def everything_context(pages: list[dict], question: str, today: str = "") -> str
     return "\n".join(lines)
 
 
-def ask_everything(pages: list[dict], question: str, today: str = "") -> str:
-    return run(ASK_ALL_INSTRUCTION, everything_context(pages, question, today))
+def ask_everything(pages: list[dict], question: str, today: str = "",
+                   me: str = "") -> str:
+    return run(ASK_ALL_INSTRUCTION, everything_context(pages, question, today, me))
 
 
 # ------------------------------------------------------------------- agenda
@@ -394,7 +431,7 @@ Output the JSON array and nothing else: no prose, no explanation, no code
 fence."""
 
 
-def agenda_context(today: str, projects: list[dict]) -> str:
+def agenda_context(today: str, projects: list[dict], me: str = "") -> str:
     """Every project at once, each update stamped and attributed.
 
     The id is in the heading rather than the name alone, because the model has
@@ -403,7 +440,7 @@ def agenda_context(today: str, projects: list[dict]) -> str:
     Priya the answer" is a different sentence from "send the GNC update", and
     the model can only write it if it knows which it is looking at.
     """
-    lines = []
+    lines = reader(me)
     for p in projects:
         head = "Person" if p.get("kind") == "person" else "Project"
         lines.append(f"# {head} {p['id']}: {p['name']}")
@@ -500,8 +537,8 @@ def _items(raw: str, projects: list[dict], cap: int = 12) -> list[dict]:
     return out
 
 
-def agenda(today: str, projects: list[dict]) -> list[dict]:
-    raw = run(AGENDA_INSTRUCTION, agenda_context(today, projects))
+def agenda(today: str, projects: list[dict], me: str = "") -> list[dict]:
+    raw = run(AGENDA_INSTRUCTION, agenda_context(today, projects, me))
     return _items(raw, projects, cap=20)
 
 
@@ -559,12 +596,13 @@ It never adds an item and is never itself an item."""
 
 
 def page_agenda_context(today: str, name: str, kind: str,
-                        updates: list[dict], profile: str | None = None) -> str:
+                        updates: list[dict], profile: str | None = None,
+                        me: str = "") -> str:
     """One page's updates, stamped and attributed. No ids in the headings:
     everything here belongs to the page you are looking at, and an item has
     nowhere else it could be logged."""
     head = "Person" if kind == "person" else "Project"
-    lines = about(kind, profile) + [f"# {head}: {name}", ""]
+    lines = reader(me) + about(kind, profile) + [f"# {head}: {name}", ""]
     for u in updates:
         stamp = u["created_at"][:16].replace("T", " ")
         if u.get("topic"):
@@ -579,13 +617,13 @@ def page_agenda_context(today: str, name: str, kind: str,
 
 
 def page_agenda(today: str, name: str, kind: str, updates: list[dict],
-                profile: str | None = None) -> list[dict]:
+                profile: str | None = None, me: str = "") -> list[dict]:
     """Items for one page. Reuses the cross-project parser, which drops anything
     malformed; `project_id` is absent by design and comes back None, because the
     page you are on is the only place one of these could belong."""
     noun = "person" if kind == "person" else "project"
     raw = run(PAGE_AGENDA_INSTRUCTION.format(noun=noun),
-              page_agenda_context(today, name, kind, updates, profile))
+              page_agenda_context(today, name, kind, updates, profile, me))
     items = _items(raw, [], cap=30)
     for it in items:
         it.pop("project_id", None)
@@ -676,9 +714,9 @@ it happened or as though anyone said it."""
 
 
 def prep_context(name: str, kind: str, updates: list[dict], since: str | None,
-                 profile: str | None = None) -> str:
+                 profile: str | None = None, me: str = "") -> str:
     head = "Person" if kind == "person" else "Project"
-    lines = about(kind, profile) + [f"# {head}: {name}", ""]
+    lines = reader(me) + about(kind, profile) + [f"# {head}: {name}", ""]
     for u in updates:
         stamp = u["created_at"][:16].replace("T", " ")
         if u.get("topic"):
@@ -696,12 +734,13 @@ def prep_context(name: str, kind: str, updates: list[dict], since: str | None,
 
 
 def prep(name: str, kind: str, updates: list[dict], since: str | None,
-         profile: str | None = None, wants: str | None = None) -> str:
+         profile: str | None = None, wants: str | None = None,
+         me: str = "") -> str:
     instruction = (PERSON_PREP_INSTRUCTION if kind == "person"
                    else PROJECT_PREP_INSTRUCTION)
     since_txt = since or "the beginning — this is the first one on record"
     return run(guided(instruction.format(since=since_txt), wants),
-               prep_context(name, kind, updates, since, profile))
+               prep_context(name, kind, updates, since, profile, me))
 
 
 # -------------------------------------------------------- drafting a profile
@@ -740,7 +779,7 @@ _DRAFT_PROJECT = """\
   · the dates or commitments it keeps turning on"""
 
 
-def draft_about(name: str, kind: str, updates: list[dict]) -> str:
+def draft_about(name: str, kind: str, updates: list[dict], me: str = "") -> str:
     """A proposed profile, for the reader to edit. Never saved by this call.
 
     The one place a model writes toward `about` at all, and it stops one step
@@ -751,4 +790,4 @@ def draft_about(name: str, kind: str, updates: list[dict]) -> str:
     noun = "person" if kind == "person" else "project"
     lines = _DRAFT_PERSON if kind == "person" else _DRAFT_PROJECT
     return run(DRAFT_ABOUT_INSTRUCTION.format(noun=noun, lines=lines),
-               context(name, updates, kind))
+               context(name, updates, kind, None, me))

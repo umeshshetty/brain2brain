@@ -194,6 +194,31 @@ def _scope(b):
     return p, tid, label, list(reversed(updates)), kind
 
 
+def _me() -> str:
+    """Who the reader is, read fresh for every Claude call.
+
+    Not cached in a module variable: it is one small SELECT against a one-row
+    table, and a profile the running process is holding from before you edited
+    it would quietly write the next brief for whoever you used to be.
+    """
+    return store.me()["about"]
+
+
+def api_me(q):
+    return store.me()
+
+
+def post_me(b):
+    """Save it, and say what it cost.
+
+    Everything interpretive in the store was composed against the old profile,
+    so it goes — see `store.set_me`. The route reports what went rather than
+    doing it quietly: seventeen briefs vanishing without a word would read as a
+    bug, and knowing the number is how you decide whether to rebuild now.
+    """
+    return store.set_me(b.get("about") or "")
+
+
 def post_summarize(b):
     """Rebuild the brief for one scope.
 
@@ -205,7 +230,7 @@ def post_summarize(b):
         raise ValueError("nothing to summarise here yet — add an update first")
     with _ai(f"a brief on {label}"):
         body = ai.summarize(label, updates, kind, p.get("about"),
-                            p.get("guidance"))
+                            p.get("guidance"), _me())
     return store.save_summary(p["id"], body, max(u["id"] for u in updates),
                               tid, len(updates))
 
@@ -218,7 +243,7 @@ def post_ask(b):
     if not updates:
         raise ValueError("no updates in scope yet")
     with _ai(f"a question about {label}"):
-        answer = ai.ask(label, updates, question, kind, p.get("about"))
+        answer = ai.ask(label, updates, question, kind, p.get("about"), _me())
     return store.save_answer(p["id"], question, answer, tid)
 
 
@@ -238,7 +263,7 @@ def post_ask_all(b):
     if not ctx["total"]:
         raise ValueError("nothing to read yet — add an update first")
     with _ai("a question about everything"):
-        answer = ai.ask_everything(ctx["pages"], question, store.today())
+        answer = ai.ask_everything(ctx["pages"], question, store.today(), _me())
     return store.save_store_answer(question, answer, ctx["newest"], ctx["total"],
                                    ctx["dropped"])
 
@@ -272,7 +297,7 @@ def post_agenda(b):
         raise ValueError("nothing to read yet — add an update to a project first")
     day = store.today()
     with _ai("the Now pane"):
-        items = ai.agenda(day, ctx["projects"])
+        items = ai.agenda(day, ctx["projects"], _me())
     return store.save_agenda(items, ctx["newest"], day, ctx["total"])
 
 
@@ -376,7 +401,7 @@ def post_page_agenda(b):
     day = store.today()
     with _ai(f"{ctx['name']}'s dates"):
         items = ai.page_agenda(day, ctx["name"], ctx["kind"], ctx["updates"],
-                               ctx["about"])
+                               ctx["about"], _me())
     return store.save_page_agenda(ctx["id"], items, ctx["newest"], day, ctx["total"])
 
 
@@ -430,7 +455,8 @@ def post_about_draft(b):
     if not ctx["updates"]:
         raise ValueError("nothing to read here yet — add an update first")
     with _ai(f"a profile for {ctx['name']}"):
-        return {"about": ai.draft_about(ctx["name"], ctx["kind"], ctx["updates"])}
+        return {"about": ai.draft_about(ctx["name"], ctx["kind"], ctx["updates"],
+                                        _me())}
 
 
 def post_prep(b):
@@ -449,7 +475,7 @@ def post_prep(b):
         raise ValueError("nothing to read yet — add an update first")
     with _ai(f"the {ctx['name']} meeting brief"):
         body = ai.prep(ctx["name"], ctx["kind"], ctx["updates"], since,
-                       ctx["about"], ctx["guidance"])
+                       ctx["about"], ctx["guidance"], _me())
     out = store.save_prep(pid, body, since, ctx["newest"], ctx["total"])
     out["counts"] = ctx["counts"]
     return out
@@ -459,6 +485,7 @@ READS = {"/api/projects": api_projects,
          "/api/project": api_project,
          "/api/agenda": api_agenda,
          "/api/search": api_search,
+         "/api/me": api_me,
          "/api/asked": api_asked,
          "/api/busy": api_busy}
 WRITES = {
@@ -479,6 +506,7 @@ WRITES = {
     "/api/agenda/act": post_agenda_act,
     "/api/page/refresh": post_page_agenda,
     "/api/page/act": post_page_act,
+    "/api/me": post_me,
     "/api/about": post_about,
     "/api/about/draft": post_about_draft,
     "/api/prep": post_prep,

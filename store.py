@@ -161,6 +161,14 @@ CREATE TABLE IF NOT EXISTS page_agenda (
     created_at        TEXT NOT NULL
 );
 
+-- Who the reader is. One row, like `agenda`, because there is one of you.
+-- The fourth column in this database that a model may never write.
+CREATE TABLE IF NOT EXISTS me (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    about      TEXT NOT NULL DEFAULT '',
+    updated_at TEXT
+);
+
 -- A question asked of the whole notebook rather than of one page. It has no
 -- project_id for the same reason `agenda` has one row: the scope is
 -- everything, and that is the point of it. Kept, like the per-page answers,
@@ -365,6 +373,66 @@ def backup() -> dict:
     finally:
         conn.close()
     return {"path": str(dst), "bytes": dst.stat().st_size, "made": True}
+
+
+ME_MAX = 4000
+
+
+def me() -> dict:
+    """Who the reader is, in their own words.
+
+    `projects.about` says who a *page* is to you. Nothing said who *you* are,
+    so every brief in the app was addressed to nobody in particular — which is
+    exactly the thing that makes a brief for your manager and a brief for
+    someone who reports to you come out identical.
+
+    One row, like `agenda`: there is one reader. It reaches every prompt in the
+    app, which is what makes it the highest-leverage text in the store and also
+    what makes the rule about it non-negotiable — you write it, it is stored as
+    typed, and no model ever writes it. A profile a model wrote and nobody read
+    would quietly curate everything afterwards on the strength of a guess.
+    """
+    conn = connect()
+    try:
+        r = conn.execute("SELECT about, updated_at FROM me WHERE id = 1").fetchone()
+        return {"about": (r["about"] if r else "") or "",
+                "updated_at": r["updated_at"] if r else None}
+    finally:
+        conn.close()
+
+
+def set_me(about: str) -> dict:
+    """Save it, and bin everything that was written for whoever you used to be.
+
+    Every interpretation in the store — the briefs, the preps, both kinds of
+    pane — was composed against the old profile, and this is the invisible kind
+    of staleness: a brief written for the wrong reader reads perfectly well. So
+    it goes rather than being flagged, the same call `set_page_setup` makes for
+    one page, made here for all of them.
+
+    Answers stay, for the reason they always do: an answer quotes the raw text
+    back at you rather than interpreting it, and it answered the question that
+    was actually asked. Nothing touches the updates.
+    """
+    about = (about or "").strip()[:ME_MAX]
+    conn = connect()
+    try:
+        with conn:
+            cur = conn.execute("SELECT about FROM me WHERE id = 1").fetchone()
+            if (cur["about"] if cur else "") == about:
+                return {"about": about, "changed": False, "cleared": {}}
+            conn.execute(
+                "INSERT INTO me (id, about, updated_at) VALUES (1, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET about = excluded.about,"
+                " updated_at = excluded.updated_at", (about, now()))
+            cleared = {}
+            for t in ("summaries", "preps", "page_agenda", "agenda"):
+                n = conn.execute(f"DELETE FROM {t}").rowcount
+                if n:
+                    cleared[t] = n
+        return {"about": about, "changed": True, "cleared": cleared}
+    finally:
+        conn.close()
 
 
 def projects() -> list[dict]:
