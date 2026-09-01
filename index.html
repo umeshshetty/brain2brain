@@ -175,6 +175,40 @@
 
   .now .foot { color:var(--dim); font-size:12px; margin-top:16px; line-height:1.5; }
 
+  /* The whole to-do list, one page. Wider than a reading column and narrower
+     than the screen: these are one-line commitments, not prose. */
+  .wrap.wide { max-width:1000px; }
+  .todo .item { margin-bottom:7px; }
+  .todo .item .txt { font-weight:500; }
+  .todo .src { align-items:baseline; }
+  .todo .grp { margin:26px 0 10px; }
+  .todo .grp:first-of-type { margin-top:6px; }
+  .todo .grp.high .lbl { color:var(--warn); }
+  .todo .grp.low  .lbl { color:var(--dim); }
+  .todo .grp .note { color:var(--dim); font-size:11.5px; font-weight:400;
+                     letter-spacing:0; text-transform:none; }
+  /* The page the item belongs to, as a link — on the pane the chip is a label
+     because the row's own text already goes there, but this page is a list of
+     work across everything and getting to the page is half of what it is for. */
+  .todo a.proj { text-decoration:none; }
+  .todo a.proj:hover { border-color:var(--accent); color:var(--accent); }
+  /* High · Normal · Low. Three buttons rather than one that cycles: you should
+     be able to say "low" without passing through "high" on the way. */
+  .prio { display:inline-flex; gap:0; margin-right:8px; border:1px solid var(--line);
+          border-radius:999px; overflow:hidden; }
+  .prio button { border:none; border-radius:0; background:none; font-size:11px;
+                 padding:2px 9px; color:var(--dim); letter-spacing:.02em; }
+  .prio button + button { border-left:1px solid var(--line); }
+  .prio button:hover { background:var(--bg); color:var(--ink); }
+  /* Normal is the default, so its mark is the quietest thing on the row —
+     filling it black would make every unprioritised item shout the fact. Only
+     a decision you actually made is worth colour. */
+  .prio button.on { background:var(--bg); color:var(--ink); font-weight:600; }
+  .prio button.on.hi { background:var(--warn); color:#fff; }
+  .prio button.on.lo { background:var(--dim); color:var(--bg); }
+  .item.pri-1 { border-left-color:var(--warn); }
+  .item.pri--1 { opacity:.7; }
+
   .item .proj.person { border-radius:999px; }
   .pcard .kind { color:var(--dim); font-weight:400; font-size:13px; margin-left:7px; }
 
@@ -642,6 +676,20 @@ let sortAZ = false;
 // Whether the "about you" box is open. Module state, not a URL: it is a thing
 // you are doing right now, like the sort order, not a place you keep.
 let meOpen = false;
+/* Whether the to-do page is also showing insights. Off by default: an insight
+   is a thing worth knowing, not a thing you owe anyone, and a list of what you
+   owe is worth less with those mixed in. */
+let todoIns = false;
+
+/* An item's identity, and it must agree with `store._pkey` exactly — a
+   priority set here and looked up there by a different rule would simply never
+   be found again. Lowercased with whitespace collapsed, and nothing more. */
+const pkey = t => (t || "").split(/\s+/).filter(Boolean).join(" ").toLowerCase();
+const rankOf = (prios, it) => {
+  const k = pkey(it.text), pid = it.project_id || 0;
+  const hit = prios.find(x => (x.project_id || 0) === pid && x.key === k);
+  return hit ? hit.rank : 0;
+};
 
 /* One row of either pane.
  *
@@ -654,19 +702,30 @@ let meOpen = false;
  * you choose rather than guessing. `chip` is false on a page's own pane: every
  * item there belongs to the page you are looking at, and stamping each row
  * with the name at the top of the screen is noise. */
-function paneItem(it, i, p, all, chip = true) {
+function paneItem(it, i, p, all, opt = {}) {
+    const { chip = true, link = false, prio = null } = opt;
     const open = i === openAct;
+    const chipHtml = !chip ? "" : p
+      ? `<${link ? "a" : "span"} class="proj${p.kind === "person" ? " person" : ""}"
+          ${link ? `href="#/p/${p.id}"` : ""}>${esc(p.name)}</${link ? "a" : "span"}>`
+      : `<span class="proj">unplaced</span>`;
     return `
-    <div class="item ${groupOf(it).replace(" ", "")}${it.done ? " done" : ""}" data-item="${i}">
+    <div class="item ${groupOf(it).replace(" ", "")}${it.done ? " done" : ""}${
+      prio ? ` pri-${prio}` : ""}" data-item="${i}">
       <div class="txt">${p ? `<a href="#/p/${p.id}"
         style="color:inherit;text-decoration:none">${esc(it.text)}</a>` : esc(it.text)}</div>
       <div class="src">
-        ${!chip ? "" : p ? `<span class="proj${p.kind === "person" ? " person" : ""}"
-          >${esc(p.name)}</span>` : `<span class="proj">unplaced</span>`}
+        ${chipHtml}
         ${it.quote ? `<span class="q">“${esc(it.quote)}”</span>` : ""}
         ${it.date ? `<span class="day">${esc(dayLabel(it.date))}</span>` : ""}
       </div>
       <div class="acts">
+        ${prio === null ? "" : `<span class="prio">${
+          [[1, "high"], [0, "normal"], [-1, "low"]].map(([r, lbl]) =>
+            `<button data-prio="${r}" data-i="${i}"
+              class="${prio === r ? `on${r === 1 ? " hi" : r === -1 ? " lo" : ""}` : ""}"
+              >${lbl}</button>`
+          ).join("")}</span>`}
         ${it.done || it.kind === "insight" ? "" : `<button data-act="done" data-i="${i}">done</button>`}
         <button data-act="note" data-i="${i}">note</button>
         ${it.kind === "insight" ? "" : `<button data-act="date" data-i="${i}"
@@ -742,6 +801,8 @@ function nowPane(ag, byId, all) {
     <aside class="now">
       <div class="head">
         <h1>Now</h1>
+        ${ag.built && items.length ? `<a class="link" href="#/todo"
+          style="text-decoration:none">all ${items.length} \u2192</a>` : ""}
         <span class="sp"></span>
         <button class="link" id="nowbtn">${ag.built ? "refresh" : "Read all projects"}</button>
       </div>
@@ -769,7 +830,7 @@ function nowPane(ag, byId, all) {
 function pagePane(pane, p, W) {
   const items = pane.items || [];
   const which = "page";
-  const item = (it, i) => paneItem(it, i, p, [], false);
+  const item = (it, i) => paneItem(it, i, p, [], { chip: false });
 
   const body =
     !pane.updates ? `<div class="empty">Nothing to read yet. Drop
@@ -1896,11 +1957,159 @@ async function projectPage(id, scope) {
 }
 
 /* ----------------------------------------------------------- routing ---- */
+/* Everything you owe, on one page, with the page it belongs to beside it.
+ *
+ * *User request, 2026-09-01: "I need a full to do list along with the project
+ * and people links next to them in one page. That should also allow me to set
+ * manually the priority which should persist then."*
+ *
+ * It reads the Now pane's own items rather than asking Claude again. The pane
+ * keeps everything it found and only *shows* twelve, so the full list was
+ * already in the store — what was missing was somewhere to read it. No new
+ * call, no second cache, no third kind of staleness, and no way for this page
+ * and the pane to be describing different days.
+ *
+ * Insights are left out. The pane's three kinds exist precisely because a
+ * decision worth knowing is not a thing you owe anyone, and a list of what you
+ * owe is worth less with those folded in. The count is printed and one click
+ * shows them, because a silent omission reads as "there was nothing else".
+ */
+async function todoPage() {
+  app.className = "wrap wide";
+  const [ag, { projects: all }] = await Promise.all([
+    api("/api/agenda"), api("/api/projects"),
+  ]);
+  const byId = Object.fromEntries(all.map(p => [p.id, p]));
+  const prios = ag.priorities || [];
+
+  // The index is the item's position in the pane's own array, because that is
+  // what `/api/agenda/act` addresses and what `set_priority` needs the page
+  // for. Sorting below reorders these pairs; it never renumbers them.
+  const every = (ag.items || []).map((it, i) => ({ it, i }));
+  const owed = every.filter(x => x.it.kind !== "insight");
+  const nIns = every.length - owed.length;
+  const rows = todoIns ? every : owed;
+
+  /* Manual priority is a lift, not a ranking of its own. What you marked high
+     rises above everything and what you marked low sinks below it; in between,
+     the pane's own reading of urgency is left in charge, which is the part it
+     is actually good at. Three bands, so there is never a question about what
+     "normal" means: it is the middle, and it is the default. */
+  const band = x => rankOf(prios, x.it);
+  const urgency = x => {
+    const k = GROUPS.findIndex(([g]) => g === groupOf(x.it));
+    return k < 0 ? GROUPS.length : k;
+  };
+  const BANDS = [
+    [1,  "High",  "you put these first"],
+    [0,  "Everything else", "in the order the pane read them"],
+    [-1, "Low",   "you pushed these down"],
+  ];
+
+  const shell = () => `
+    <div class="head">
+      <a href="#/" class="dim" style="text-decoration:none">← all projects</a>
+      <span class="sp"></span>
+      <button class="link" id="todorefresh">refresh</button>
+    </div>
+    <h1 style="margin-bottom:4px">To do</h1>
+    <div class="dim" style="font-size:13px;margin-bottom:18px">
+      Everything the pane found across every project and every person${
+        ag.built ? ` — ${owed.length} open` : ""}.
+      ${nIns ? `<button class="link" id="todoins">${todoIns
+        ? "hide" : "also show"} ${nIns} insight${nIns === 1 ? "" : "s"}</button>
+        <span class="dim">— worth knowing, not owed</span>` : ""}
+    </div>
+    ${!ag.built ? `<div class="empty">The pane has not been built yet. Open the
+        home view and press <b>Read all projects</b> — this page reads what it
+        found.</div>`
+    : !rows.length ? `<div class="empty">Nothing open. Everything the pane found
+        is an insight or already logged done.</div>`
+    : `${ag.stale ? `<div class="stale" style="display:block;margin-bottom:14px">${
+        ag.behind ? `${ag.behind} new update${ag.behind === 1 ? "" : "s"} since this`
+        : ag.outdated ? `Built for ${esc(ag.for_date)} — the day has turned over`
+        : "the updates this read have changed"}</div>` : ""}
+      <div class="todo">${BANDS.map(([r, label, note]) => {
+        const mine = rows.filter(x => band(x) === r)
+                         .sort((a, b) => urgency(a) - urgency(b));
+        if (!mine.length) return "";
+        // The middle band needs no heading when nothing has been lifted out
+        // of it: a list under "Everything else" with no High above it is just
+        // the list, and a header for it would be furniture.
+        const bare = r === 0 && !rows.some(x => band(x) !== 0);
+        return `${bare ? "" : `<div class="grp ${r === 1 ? "high" : r === -1 ? "low" : ""}">
+            <span class="lbl">${label}</span>
+            <span class="note">${note}</span><span class="rule"></span>
+            <span class="lbl">${mine.length}</span></div>`}
+          ${mine.map(({ it, i }) => paneItem(
+            it, i, it.project_id ? byId[it.project_id] : null, all,
+            { link: true, prio: band({ it }) })).join("")}`;
+      }).join("")}</div>
+      <div class="dim" style="font-size:12px;margin-top:22px;line-height:1.5">
+        High and low are yours and they persist. They are stored against the
+        item's own words rather than its place in the list, because the list is
+        rewritten every time the pane is — so a rewording loses a mark rather
+        than moving it onto something else.
+      </div>`}`;
+
+  app.innerHTML = shell();
+  const rerender = () => { app.innerHTML = shell(); wire(); };
+
+  function wire() {
+    app.onclick = async e => {
+      if (e.target.id === "todoins") { todoIns = !todoIns; return rerender(); }
+      if (e.target.id === "todorefresh") {
+        return busy(e.target, "Reading", async () => {
+          await api("/api/agenda/refresh", {}); await route();
+        }, AI_LABEL.now());
+      }
+      const pr = e.target.closest("[data-prio]");
+      if (pr) {
+        const { it } = every[+pr.dataset.i];
+        const rank = +pr.dataset.prio;
+        // Written straight through and re-read, rather than patched in memory:
+        // this is the one thing on the page that is not derived, and the
+        // cheapest way to be sure it landed is to show what the store says.
+        await api("/api/priority", {
+          project_id: it.project_id || null, text: it.text, rank,
+        });
+        return route();
+      }
+      const b = e.target.closest("[data-act]");
+      if (b) {
+        const i = +b.dataset.i;
+        const same = openAct === i && openKind === b.dataset.act;
+        openAct = same ? null : i;
+        openKind = same ? null : b.dataset.act;
+        return rerender();
+      }
+      if (e.target.id === "actcancel") { openAct = openKind = null; return rerender(); }
+      if (e.target.id !== "actgo") return;
+      const i = openAct, kind = openKind;
+      const note = $("#actnote") ? $("#actnote").value.trim() : "";
+      const date = $("#actdate") ? $("#actdate").value : "";
+      const target = $("#acttarget") ? $("#acttarget").value : "";
+      await busy(e.target, "Logging", async () => {
+        const out = await api("/api/agenda/act", {
+          built: ag.created_at, index: i, action: kind,
+          note, date, project_id: target || null,
+        });
+        openAct = openKind = null;
+        await route();
+        toast(`Logged to ${out.logged_to.name}`);
+      });
+    };
+    if ($("#actnote")) $("#actnote").focus();
+  }
+  wire();
+}
+
 async function route() {
   app.onclick = null; app.onchange = null; app.className = "wrap";
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/t\/(\d+)|\/(unfiled))?/);
   try {
     if (m) await projectPage(m[1], m[2] || m[3] || "");
+    else if (/^#\/todo\b/.test(location.hash)) await todoPage();
     else await home(/^#\/people\b/.test(location.hash) ? "person" : "project");
   } catch (e) {
     app.innerHTML = `<div class="head"><a href="#/" class="dim"

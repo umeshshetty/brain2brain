@@ -14,7 +14,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. eleven tables
+store.py      SQLite. twelve tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -753,6 +753,60 @@ next morning, so the first look of the day should not be at one.
 | **Never a first build** | Only a pane that already exists. Building one is a deliberate first act, and an empty store has nothing to read. |
 | **It says so while it does it** | The banner reads *"Built for Aug 27 — rebuilding for today…"* rather than going quiet, and on failure it says that out loud and puts the honest complaint back. A pane silently describing yesterday is the exact thing this exists to prevent. |
 | **`BRAIN_NO_CATCHUP=1`** | An unasked call is the kind of thing a person should be able to refuse. The server writes the answer into the page beside the token. |
+
+## To do — the whole list, and your own order
+
+**User request, 2026-09-01.** *"I need a full to do list along with the project
+and people links next to them in one page. That should also allow me to set
+manually the priority which should persist then."*
+
+`#/todo`. Every open item across every project and every person, each with the
+page it belongs to beside it as a link.
+
+**It reads the Now pane's own items rather than asking Claude again.** The pane
+already keeps everything it found and only *shows* twelve — so the full list
+was in the store all along and what was missing was somewhere to read it. No
+new call, no second cache, no third kind of staleness, and no way for this page
+and the pane to be describing different days. What it inherits is the pane's
+cap: 40 updates per project, printed there.
+
+**Insights are left out, and the count is printed.** The pane's three kinds
+exist because a decision worth knowing is not a thing you owe anyone, and a
+list of what you owe is worth less with those folded in. One click shows them;
+a silent omission would read as *"there was nothing else"*.
+
+**A priority is the first thing a user sets on a derived item, and that is the
+whole difficulty.** Items are rewritten wholesale on every rebuild and are
+addressed by *position* — which is why acting on one already sends back the
+pane's timestamp. A mark pinned to a position would land on a different item
+after the next rebuild, silently, and reorder your day on the strength of a
+coincidence.
+
+So it is keyed by the page and **the item's own words**: lowercased, whitespace
+collapsed, and nothing more. Between rebuilds a model varies capitalisation and
+spacing far more often than it rewords the sentence, and normalising harder
+would start folding two genuinely different items on one page into one row.
+
+| | |
+|---|---|
+| **A rewording loses the mark** | Rather than moving it onto something else. The failure that shows itself, over the one that quietly reorders your day. Verified both ways: a rebuild that moves the item to another index keeps its mark, and the item that took its old index does not inherit it. |
+| **Orphans are kept** | An item can drop out of one rebuild and come back in the next, and a decision you made should come back with it. A row is a few bytes and is only read while a matching item is on screen. |
+| **It writes nothing to the log** | Unlike `done` · `note` · `date`, which record something you *did*. This records how you want the list read, not work — so it stays out of the raw text. A store test asserts the updates are untouched. |
+| **Normal is not stored** | Absent and "explicitly normal" are the same thing, and one of them would accumulate a row per item you ever touched. |
+| **It rides on the agenda read** | Not a route of its own, so the pane and the list can never be looking at different marks. |
+
+**And it is a lift, not a ranking of its own.** What you marked high rises above
+everything and what you marked low sinks below it; in between, the pane's own
+reading of urgency stays in charge, which is the part it is good at. Three
+bands, so there is never a question about what *normal* means — it is the
+middle, and it is the default, which is also why its button is the quietest
+thing on the row.
+
+**Fifth thing in the store that no model writes,** after `updates.body`,
+`me.about`, `projects.about` and `projects.guidance`. Unlike those four it is
+not text you typed but a decision you made, and it points at something
+disposable — which is exactly why it needed an identity of its own rather than
+a place in a list.
 
 ## Dates — the pane on a page
 

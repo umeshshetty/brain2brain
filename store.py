@@ -91,6 +91,36 @@ CREATE TABLE IF NOT EXISTS summaries (
 CREATE UNIQUE INDEX IF NOT EXISTS summaries_scope
     ON summaries(project_id, IFNULL(topic_id, 0));
 
+-- A priority you set by hand on one item of the pane.
+--
+-- Every item in this app is derived: the pane is rewritten wholesale on each
+-- rebuild, and items are addressed by position, which is why acting on one
+-- sends back the pane's timestamp. A priority pinned to a position would
+-- therefore land on a different item after the next rebuild — silently, and
+-- wrongly. So it is keyed by the page and the item's own words instead.
+--
+-- `key` is that text lowercased with its whitespace collapsed, and no more:
+-- between rebuilds a model varies capitalisation and spacing far more often
+-- than it rewords the sentence, and normalising harder would start folding two
+-- genuinely different items on one page into one row. When the wording does
+-- change, the priority is *lost* rather than misapplied — the failure that
+-- shows itself, rather than the one that quietly reorders your day.
+--
+-- Orphans are kept. An item can drop out of one rebuild and come back in the
+-- next, and a decision you made should come back with it. A row is a few bytes
+-- and it is only ever read while an item it matches is on screen.
+CREATE TABLE IF NOT EXISTS priorities (
+    id         INTEGER PRIMARY KEY,
+    -- NULL for an item Claude could not tie to a page. Nullable, so the
+    -- uniqueness below folds it the way summaries folds a NULL topic.
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    key        TEXT NOT NULL,
+    rank       INTEGER NOT NULL,      -- 1 high, -1 low. 0 is not stored.
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS priorities_item
+    ON priorities(IFNULL(project_id, 0), key);
+
 -- An update has one home — the project or person you wrote it in — and any
 -- number of links to others. A note from a 1-1 that is really about the GoBMP
 -- migration is linked to GoBMP; it is not copied there. Copying raw text would
@@ -1227,7 +1257,8 @@ def agenda() -> dict:
                          " created_at FROM agenda WHERE id = 1").fetchone()
         if not r:
             return {"built": False, "items": [], "updates": total,
-                    "dropped": dropped, "per_project": AGENDA_PER_PROJECT}
+                    "dropped": dropped, "per_project": AGENDA_PER_PROJECT,
+                    "priorities": []}
         behind = conn.execute("SELECT count(*) FROM updates WHERE id > ?",
                               (r["through_update_id"],)).fetchone()[0]
         outdated = r["for_date"] != today()
@@ -1251,7 +1282,75 @@ def agenda() -> dict:
             "updates": total,
             "dropped": dropped,
             "per_project": AGENDA_PER_PROJECT,
+            # Read here rather than from a route of their own so the pane and
+            # the to-do list can never be looking at different marks.
+            "priorities": _rows(conn.execute(
+                "SELECT project_id, key, rank FROM priorities ORDER BY id")),
         }
+    finally:
+        conn.close()
+
+
+def _pkey(text: str) -> str:
+    """An item's identity: its own words, lowercased, whitespace collapsed.
+
+    Deliberately no cleverer than that — see the note above `priorities` in
+    SCHEMA for why a looser key would be worse than a lost priority.
+    """
+    return " ".join((text or "").split()).lower()
+
+
+def priorities() -> list[dict]:
+    """Every priority you have set, for the pane and the list to join against.
+
+    Sent whole rather than looked up per item: there are as many of these as
+    you have bothered to set, and a page that draws two hundred items should
+    not make two hundred queries to draw them.
+    """
+    conn = connect()
+    try:
+        return _rows(conn.execute(
+            "SELECT project_id, key, rank FROM priorities ORDER BY id"))
+    finally:
+        conn.close()
+
+
+def set_priority(project_id, text: str, rank: int) -> dict:
+    """Raise, lower or unset one item. Writes nothing to the log.
+
+    Unlike `done`, `note` and `date` — which record something you did and
+    belong in the raw text like any other update — this records only how you
+    want the list ordered. It is about the reading, not about the work, so it
+    stays out of the one thing that cannot be regenerated.
+    """
+    key = _pkey(text)
+    if not key:
+        raise ValueError("an item needs text to carry a priority")
+    rank = int(rank or 0)
+    if rank not in (-1, 0, 1):
+        raise ValueError("a priority is high, low, or neither")
+    pid = int(project_id) if project_id else None
+    conn = connect()
+    try:
+        with conn:
+            if pid is not None and not conn.execute(
+                    "SELECT 1 FROM projects WHERE id = ?", (pid,)).fetchone():
+                raise ValueError("no such page")
+            # Unsetting deletes rather than storing a zero: absent and
+            # "explicitly normal" are the same thing, and one of them would
+            # otherwise accumulate a row per item you ever touched.
+            if rank == 0:
+                conn.execute("DELETE FROM priorities WHERE"
+                             " IFNULL(project_id, 0) = IFNULL(?, 0) AND key = ?",
+                             (pid, key))
+            else:
+                conn.execute(
+                    "INSERT INTO priorities (project_id, key, rank, created_at)"
+                    " VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT(IFNULL(project_id, 0), key) DO UPDATE SET"
+                    " rank = excluded.rank, created_at = excluded.created_at",
+                    (pid, key, rank, now()))
+        return {"project_id": pid, "key": key, "rank": rank}
     finally:
         conn.close()
 

@@ -219,6 +219,17 @@ def post_me(b):
     return store.set_me(b.get("about") or "")
 
 
+def post_priority(b):
+    """Raise or lower one item of the pane by hand.
+
+    No Claude call and nothing written to the log — see `store.set_priority`.
+    The item is named by its text rather than its position, because a position
+    means something different after the next rebuild.
+    """
+    return store.set_priority(_int(b.get("project_id")), b.get("text") or "",
+                              b.get("rank"))
+
+
 def post_summarize(b):
     """Rebuild the brief for one scope.
 
@@ -512,6 +523,7 @@ WRITES = {
     "/api/prep": post_prep,
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,
+    "/api/priority": post_priority,
     "/api/ask-all": post_ask_all,
     "/api/ask-all/delete": post_delete_store_answer,
 }
