@@ -763,12 +763,34 @@ manually the priority which should persist then."*
 `#/todo`. Every open item across every project and every person, each with the
 page it belongs to beside it as a link.
 
-**It reads the Now pane's own items rather than asking Claude again.** The pane
-already keeps everything it found and only *shows* twelve — so the full list
-was in the store all along and what was missing was somewhere to read it. No
-new call, no second cache, no third kind of staleness, and no way for this page
-and the pane to be describing different days. What it inherits is the pane's
-cap: 40 updates per project, printed there.
+**The first version read the Now pane and was wrong about it.** *User
+request, same day: "I tink it does not contain all to do's from all people,
+project, only 20 now is not the right number."* It was not. The Now pane keeps
+everything it finds and only shows twelve, so reading its cache looked like a
+free full list — but that pane is one call over 40 updates per project asked
+for what is **soon**, and everything else goes on the floor before it is ever
+cached. Measured on the live store: **20 items, against 172 already sitting in
+the per-page panes** — 97 of them things you owe. The pane was not hiding a
+list; it never had one.
+
+**So it is the union of every page's own pane, which was exhaustive all
+along.** *Dates* reads one page at a time, 120 updates deep, and was built
+precisely because a quiet page's real deadline loses to a busy page's routine
+one when they are ranked against each other. Read all of them and that
+property is what you get back: **one page at a time, so nothing is crowded out
+by a busier one** — which is what the page says at the top of itself.
+`store.all_page_agendas()` is one read for all of it. Still no new Claude call,
+no new cache and no fourth kind of staleness; what is new is that there are
+now fifteen panes' worth of freshness to report instead of one.
+
+**A page nobody has read is named and counted, never quietly missing.** A pane
+is built when you open a page, so a page you have not visited has no items —
+and a to-do list silently short by four pages is worse than no list. The card
+says *"4 pages with something on them have never been read"*, names them, says
+it costs four Claude calls at a minute or two, and stops if you leave the page
+mid-way. Pages merely *behind* are a second, quieter offer: out of date is not
+the same as absent, and spending nine calls to refresh nine panes is a
+different decision from spending four to have any answer at all.
 
 **Insights are left out, and the count is printed.** The pane's three kinds
 exist because a decision worth knowing is not a thing you owe anyone, and a
@@ -793,10 +815,10 @@ would start folding two genuinely different items on one page into one row.
 | **Orphans are kept** | An item can drop out of one rebuild and come back in the next, and a decision you made should come back with it. A row is a few bytes and is only read while a matching item is on screen. |
 | **It writes nothing to the log** | Unlike `done` · `note` · `date`, which record something you *did*. This records how you want the list read, not work — so it stays out of the raw text. A store test asserts the updates are untouched. |
 | **Normal is not stored** | Absent and "explicitly normal" are the same thing, and one of them would accumulate a row per item you ever touched. |
-| **It rides on the agenda read** | Not a route of its own, so the pane and the list can never be looking at different marks. |
+| **A row is a page and an index within *that page's* pane** | Which is the pair `/api/page/act` addresses. Sorting into bands reorders rows on screen and never renumbers them, so acting on the third thing you can see still logs against the item the pane it came from calls its own. |
 
 **And it is a lift, not a ranking of its own.** What you marked high rises above
-everything and what you marked low sinks below it; in between, the pane's own
+everything and what you marked low sinks below it; in between, each page's own
 reading of urgency stays in charge, which is the part it is good at. Three
 bands, so there is never a question about what *normal* means — it is the
 middle, and it is the default, which is also why its button is the quietest

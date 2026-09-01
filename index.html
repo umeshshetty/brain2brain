@@ -680,6 +680,13 @@ let meOpen = false;
    is a thing worth knowing, not a thing you owe anyone, and a list of what you
    owe is worth less with those mixed in. */
 let todoIns = false;
+/* Whether the "read what needs reading" button also covers pages whose pane is
+   merely behind, on top of the ones never read at all. Off: an unread page is
+   a hole in the list, a stale one is only out of date, and they are not worth
+   the same number of Claude calls by default. */
+let todoStale = false;
+/* Which page is being read, while the button is working through them. */
+let todoBuild = null;
 
 /* An item's identity, and it must agree with `store._pkey` exactly — a
    priority set here and looked up there by a different rule would simply never
@@ -801,8 +808,7 @@ function nowPane(ag, byId, all) {
     <aside class="now">
       <div class="head">
         <h1>Now</h1>
-        ${ag.built && items.length ? `<a class="link" href="#/todo"
-          style="text-decoration:none">all ${items.length} \u2192</a>` : ""}
+        <a class="link" href="#/todo" style="text-decoration:none">to do \u2192</a>
         <span class="sp"></span>
         <button class="link" id="nowbtn">${ag.built ? "refresh" : "Read all projects"}</button>
       </div>
@@ -1961,95 +1967,128 @@ async function projectPage(id, scope) {
  *
  * *User request, 2026-09-01: "I need a full to do list along with the project
  * and people links next to them in one page. That should also allow me to set
- * manually the priority which should persist then."*
+ * manually the priority which should persist then."* — and, on being shown a
+ * first version built from the Now pane, *"it does not contain all to do's
+ * from all people, project, only 20 now is not the right number."*
  *
- * It reads the Now pane's own items rather than asking Claude again. The pane
- * keeps everything it found and only *shows* twelve, so the full list was
- * already in the store — what was missing was somewhere to read it. No new
- * call, no second cache, no third kind of staleness, and no way for this page
- * and the pane to be describing different days.
+ * Which was right, and the fix was to read a different pane. The Now pane caps
+ * each project at 40 updates and then keeps the most urgent items across the
+ * whole store: it is a digest of what is *soon*, the right answer to "what is
+ * happening" and the wrong one to "what do I owe". A page's own pane is asked
+ * to read one page exhaustively. On this store that is the difference between
+ * **20 items and 172** — so this page is the union of every page's pane, and
+ * no Claude call of its own.
  *
- * Insights are left out. The pane's three kinds exist precisely because a
- * decision worth knowing is not a thing you owe anyone, and a list of what you
- * owe is worth less with those folded in. The count is printed and one click
- * shows them, because a silent omission reads as "there was nothing else".
+ * The cost of that is that a page nobody has opened has no pane, and cannot be
+ * quietly left out — a to-do list that silently omits four pages is worse than
+ * no to-do list. So they are named, counted, and one button reads them.
+ *
+ * Insights are excluded: the pane's kinds exist precisely because a decision
+ * worth knowing is not a thing you owe anyone.
  */
 async function todoPage() {
   app.className = "wrap wide";
-  const [ag, { projects: all }] = await Promise.all([
-    api("/api/agenda"), api("/api/projects"),
-  ]);
-  const byId = Object.fromEntries(all.map(p => [p.id, p]));
-  const prios = ag.priorities || [];
+  const { pages, priorities: prios } = await api("/api/todo");
 
-  // The index is the item's position in the pane's own array, because that is
-  // what `/api/agenda/act` addresses and what `set_priority` needs the page
-  // for. Sorting below reorders these pairs; it never renumbers them.
-  const every = (ag.items || []).map((it, i) => ({ it, i }));
-  const owed = every.filter(x => x.it.kind !== "insight");
+  // One flat list of rows. Each carries the page and the item's index *within
+  // that page's pane*, because that pair is what `/api/page/act` addresses and
+  // what a priority is stored against. Sorting reorders rows; it never
+  // renumbers them.
+  const every = [];
+  for (const pg of pages)
+    (pg.items || []).forEach((it, idx) => every.push({ pg, it, idx }));
+  const owed = every.filter(r => r.it.kind !== "insight");
   const nIns = every.length - owed.length;
   const rows = todoIns ? every : owed;
 
+  const missing = pages.filter(p => !p.built);
+  const behind = pages.filter(p => p.built && p.stale);
+  const todoRead = missing.concat(todoStale ? behind : []);
+
   /* Manual priority is a lift, not a ranking of its own. What you marked high
      rises above everything and what you marked low sinks below it; in between,
-     the pane's own reading of urgency is left in charge, which is the part it
-     is actually good at. Three bands, so there is never a question about what
-     "normal" means: it is the middle, and it is the default. */
-  const band = x => rankOf(prios, x.it);
-  const urgency = x => {
-    const k = GROUPS.findIndex(([g]) => g === groupOf(x.it));
+     each page's own reading of urgency is left in charge, which is the part it
+     is good at. Three bands, so there is never a question about what "normal"
+     means: it is the middle, and it is the default. */
+  const band = r => rankOf(prios, { project_id: r.pg.id, text: r.it.text });
+  const urgency = r => {
+    const k = GROUPS.findIndex(([g]) => g === groupOf(r.it));
     return k < 0 ? GROUPS.length : k;
   };
   const BANDS = [
     [1,  "High",  "you put these first"],
-    [0,  "Everything else", "in the order the pane read them"],
+    [0,  "Everything else", "in each page's own order of urgency"],
     [-1, "Low",   "you pushed these down"],
   ];
+  const key = r => `${r.pg.id}:${r.idx}`;
 
   const shell = () => `
     <div class="head">
       <a href="#/" class="dim" style="text-decoration:none">← all projects</a>
       <span class="sp"></span>
-      <button class="link" id="todorefresh">refresh</button>
     </div>
     <h1 style="margin-bottom:4px">To do</h1>
-    <div class="dim" style="font-size:13px;margin-bottom:18px">
-      Everything the pane found across every project and every person${
-        ag.built ? ` — ${owed.length} open` : ""}.
+    <div class="dim" style="font-size:13px;margin-bottom:16px">
+      ${owed.length} open across ${pages.filter(p => p.built).length} of
+      ${pages.length} page${pages.length === 1 ? "" : "s"}, read one page at a
+      time so nothing is crowded out by a busier one.
       ${nIns ? `<button class="link" id="todoins">${todoIns
         ? "hide" : "also show"} ${nIns} insight${nIns === 1 ? "" : "s"}</button>
         <span class="dim">— worth knowing, not owed</span>` : ""}
     </div>
-    ${!ag.built ? `<div class="empty">The pane has not been built yet. Open the
-        home view and press <b>Read all projects</b> — this page reads what it
-        found.</div>`
-    : !rows.length ? `<div class="empty">Nothing open. Everything the pane found
-        is an insight or already logged done.</div>`
-    : `${ag.stale ? `<div class="stale" style="display:block;margin-bottom:14px">${
-        ag.behind ? `${ag.behind} new update${ag.behind === 1 ? "" : "s"} since this`
-        : ag.outdated ? `Built for ${esc(ag.for_date)} — the day has turned over`
-        : "the updates this read have changed"}</div>` : ""}
-      <div class="todo">${BANDS.map(([r, label, note]) => {
+
+    ${todoBuild ? `<div class="card" style="margin-bottom:16px">
+        <b>Reading ${todoBuild.done + 1} of ${todoBuild.total}</b>
+        <span class="dim"> — ${esc(todoBuild.name)}</span>
+        <div class="dim" style="font-size:12.5px;margin-top:5px">One Claude
+          call per page, one at a time. Leaving this page stops it.</div>
+      </div>`
+    : todoRead.length ? `<div class="card${missing.length ? " about empty" : ""}"
+        style="margin-bottom:16px">
+        <div class="row" style="align-items:baseline">
+          <b>${missing.length
+            ? `${missing.length} page${missing.length === 1 ? "" : "s"} with
+               something on ${missing.length === 1 ? "it" : "them"} ${
+               missing.length === 1 ? "has" : "have"} never been read`
+            : `${behind.length} page${behind.length === 1 ? "" : "s"} ${
+               behind.length === 1 ? "is" : "are"} behind`}</b>
+          <span class="sp" style="margin-left:auto"></span>
+          <button class="go" id="todobuild">Read ${todoRead.length}
+            page${todoRead.length === 1 ? "" : "s"}</button>
+        </div>
+        <div class="dim" style="font-size:12.5px;margin-top:6px">
+          ${todoRead.map(p => esc(p.name)).join(" · ")}
+          <br>${todoRead.length} Claude call${todoRead.length === 1 ? "" : "s"},
+          one at a time — a minute or two.
+          ${missing.length && behind.length ? `<button class="link" id="todostale"
+            >${todoStale ? "just the unread ones" : `also refresh the
+            ${behind.length} behind`}</button>` : ""}
+        </div>
+      </div>` : ""}
+
+    ${!rows.length ? `<div class="empty">${pages.length
+        ? "Nothing open on any page that has been read."
+        : "Nothing anywhere yet. Add an update to a project or a person."}</div>`
+    : `<div class="todo">${BANDS.map(([r, label, note]) => {
         const mine = rows.filter(x => band(x) === r)
                          .sort((a, b) => urgency(a) - urgency(b));
         if (!mine.length) return "";
-        // The middle band needs no heading when nothing has been lifted out
-        // of it: a list under "Everything else" with no High above it is just
-        // the list, and a header for it would be furniture.
+        // The middle band needs no heading when nothing has been lifted out of
+        // it: a list under "Everything else" with no High above it is just the
+        // list, and a header for it would be furniture.
         const bare = r === 0 && !rows.some(x => band(x) !== 0);
         return `${bare ? "" : `<div class="grp ${r === 1 ? "high" : r === -1 ? "low" : ""}">
             <span class="lbl">${label}</span>
             <span class="note">${note}</span><span class="rule"></span>
             <span class="lbl">${mine.length}</span></div>`}
-          ${mine.map(({ it, i }) => paneItem(
-            it, i, it.project_id ? byId[it.project_id] : null, all,
-            { link: true, prio: band({ it }) })).join("")}`;
+          ${mine.map(x => paneItem(x.it, key(x), x.pg, [],
+            { link: true, prio: band(x) })).join("")}`;
       }).join("")}</div>
       <div class="dim" style="font-size:12px;margin-top:22px;line-height:1.5">
         High and low are yours and they persist. They are stored against the
         item's own words rather than its place in the list, because the list is
-        rewritten every time the pane is — so a rewording loses a mark rather
-        than moving it onto something else.
+        rewritten every time a page is read — so a rewording loses a mark
+        rather than moving it onto something else.
       </div>`}`;
 
   app.innerHTML = shell();
@@ -2058,26 +2097,35 @@ async function todoPage() {
   function wire() {
     app.onclick = async e => {
       if (e.target.id === "todoins") { todoIns = !todoIns; return rerender(); }
-      if (e.target.id === "todorefresh") {
-        return busy(e.target, "Reading", async () => {
-          await api("/api/agenda/refresh", {}); await route();
-        }, AI_LABEL.now());
+      if (e.target.id === "todostale") { todoStale = !todoStale; return rerender(); }
+      if (e.target.id === "todobuild") {
+        // One at a time, and it says whose. `_ai()` serialises these anyway;
+        // doing it here as well is what lets the page name the page it is on
+        // and stop cleanly when you leave.
+        const mine = todoRead.slice();
+        for (let n = 0; n < mine.length; n++) {
+          if (!/^#\/todo\b/.test(location.hash)) return;   // you left; stop.
+          todoBuild = { done: n, total: mine.length, name: mine[n].name };
+          rerender();
+          try { await api("/api/page/refresh", { project_id: mine[n].id }); }
+          catch (err) { todoBuild = null; return toast(err.message), route(); }
+        }
+        todoBuild = null;
+        return route();
       }
       const pr = e.target.closest("[data-prio]");
       if (pr) {
-        const { it } = every[+pr.dataset.i];
-        const rank = +pr.dataset.prio;
-        // Written straight through and re-read, rather than patched in memory:
+        const row = every.find(x => key(x) === pr.dataset.i);
+        // Written straight through and re-read rather than patched in memory:
         // this is the one thing on the page that is not derived, and the
         // cheapest way to be sure it landed is to show what the store says.
-        await api("/api/priority", {
-          project_id: it.project_id || null, text: it.text, rank,
-        });
+        await api("/api/priority", { project_id: row.pg.id, text: row.it.text,
+                                     rank: +pr.dataset.prio });
         return route();
       }
       const b = e.target.closest("[data-act]");
       if (b) {
-        const i = +b.dataset.i;
+        const i = b.dataset.i;
         const same = openAct === i && openKind === b.dataset.act;
         openAct = same ? null : i;
         openKind = same ? null : b.dataset.act;
@@ -2085,18 +2133,17 @@ async function todoPage() {
       }
       if (e.target.id === "actcancel") { openAct = openKind = null; return rerender(); }
       if (e.target.id !== "actgo") return;
-      const i = openAct, kind = openKind;
+      const row = every.find(x => key(x) === openAct), kind = openKind;
       const note = $("#actnote") ? $("#actnote").value.trim() : "";
       const date = $("#actdate") ? $("#actdate").value : "";
-      const target = $("#acttarget") ? $("#acttarget").value : "";
       await busy(e.target, "Logging", async () => {
-        const out = await api("/api/agenda/act", {
-          built: ag.created_at, index: i, action: kind,
-          note, date, project_id: target || null,
+        await api("/api/page/act", {
+          project_id: row.pg.id, built: row.pg.created_at, index: row.idx,
+          action: kind, note, date,
         });
         openAct = openKind = null;
         await route();
-        toast(`Logged to ${out.logged_to.name}`);
+        toast(`Logged to ${row.pg.name}`);
       });
     };
     if ($("#actnote")) $("#actnote").focus();

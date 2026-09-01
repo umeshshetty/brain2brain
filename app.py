@@ -219,6 +219,17 @@ def post_me(b):
     return store.set_me(b.get("about") or "")
 
 
+def api_todo(q):
+    """Everything open, everywhere: every page's own pane, and your marks.
+
+    Built out of the per-page panes rather than the cross-project one. That
+    pane is a digest of what is *soon* across the whole store — the right
+    answer to "what is happening" and the wrong one to "what do I owe". On a
+    real store the difference was 20 items against 172.
+    """
+    return {"pages": store.all_page_agendas(), "priorities": store.priorities()}
+
+
 def post_priority(b):
     """Raise or lower one item of the pane by hand.
 
@@ -498,6 +509,7 @@ READS = {"/api/projects": api_projects,
          "/api/search": api_search,
          "/api/me": api_me,
          "/api/asked": api_asked,
+    "/api/todo": api_todo,
          "/api/busy": api_busy}
 WRITES = {
     "/api/project/new": post_project,
