@@ -435,6 +435,11 @@ def set_me(about: str) -> dict:
         conn.close()
 
 
+# How much of the newest update a card may show. Enough for a two-line clamp
+# at the widest column, and nothing like enough to matter on the wire.
+BLURB = 240
+
+
 def projects() -> list[dict]:
     """Projects and people together, each carrying its `kind`.
 
@@ -446,15 +451,25 @@ def projects() -> list[dict]:
     try:
         # Counted with subqueries, not two LEFT JOINs: joining both would
         # multiply the rows and report updates × topics for each.
+        # `about` and the opening of the newest update ride along because the
+        # list is where you decide which page you meant, and a name with a
+        # count beside it says nothing about the page — you had to open it to
+        # find out. Both are raw user text, so neither can go stale and neither
+        # is a model's opinion. Truncated here rather than in the browser: a
+        # year of pasted transcripts would otherwise cross the wire to be
+        # thrown away by a two-line clamp.
         return _rows(conn.execute("""
-            SELECT p.id, p.name, p.kind, p.created_at,
+            SELECT p.id, p.name, p.kind, p.created_at, p.about,
                    (SELECT count(*) FROM updates u WHERE u.project_id = p.id)    AS updates,
                    (SELECT count(*) FROM topics  t WHERE t.project_id = p.id)    AS topics,
                    (SELECT max(created_at) FROM updates u WHERE u.project_id = p.id)
-                       AS last_update_at
+                       AS last_update_at,
+                   (SELECT substr(u.body, 1, ?) FROM updates u
+                     WHERE u.project_id = p.id
+                     ORDER BY u.created_at DESC, u.id DESC LIMIT 1)              AS last_body
             FROM projects p
             ORDER BY last_update_at IS NULL, last_update_at DESC, p.name COLLATE NOCASE
-        """))
+        """, (BLURB,)))
     finally:
         conn.close()
 

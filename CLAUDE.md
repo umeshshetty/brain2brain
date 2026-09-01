@@ -505,6 +505,33 @@ for, which is the cheapest findability there is. A page you made and have not
 written on yet is drawn dashed and dim rather than dropped — half of them are
 that, and they should not compete with the ones that moved this week.
 
+**A card that says only a name and a count makes you open it to learn
+anything.** *User note, 2026-09-01.* "6 updates · 5 topics · today" is a
+measurement of the page, not a fact about it — so finding the page you meant
+cost a click each time. A card now carries the opening of its newest update,
+whitespace collapsed and a leading permalink skipped, because half these notes
+are pasted under the Slack link they came from and a card showing a URL has
+said nothing. Where you have written `about`, that goes above it on its own
+line and the blurb gives one up, so the card is the same height either way.
+Both are raw user text: a card can be out of date only by being a page that
+has not moved, never by being wrong.
+
+**And it says what the Now pane already found on it.** The pane's items carry
+`project_id` and are already in the browser, so counting them per page costs
+nothing and no second read — which is also what makes it safe: a card cannot
+disagree with the pane beside it, because it is the same cached items counted.
+Amber if one is overdue, accent if one is today. Insights are not counted; a
+decision worth knowing is not a thing you owe anyone. No pane built, no badge —
+never a row of zeroes.
+
+**A page you have not written on is one line, not a card.** Twenty-two of
+thirty-six were blanks, each the size of a page with a year on it, filling most
+of the grid to say "nothing yet" twenty-two times. They collapse to a strip of
+name-only chips under their own count, after the pages that moved. Still there,
+still one click, no longer competing. A–Z therefore sorts within each group
+rather than across both — two short alphabetical lists, and the strip is short
+enough to read whole.
+
 **And when you would rather just look, the list sorts A–Z.** It comes back
 newest-touched first, which is right for the top of it and useless for the tail
 — a page you touched three weeks ago sits at position 30 with nothing to aim
