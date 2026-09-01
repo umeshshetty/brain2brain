@@ -1025,6 +1025,23 @@ embedded in the page — a custom header cannot be set cross-origin without a
 preflight, and none is answered. The `Host` header must be loopback, which
 blocks DNS rebinding. Strict CSP; the page has zero external references.
 
+**A refused write still reads its body, and that is not tidiness.** *Review
+finding, 2026-09-01.* `do_POST` returned on a bad host, an unknown path or a
+stale token before touching the socket — so the body stayed in it, and
+HTTP/1.1 keep-alive handed those bytes to the next request as its request
+line. In the log: `Bad request syntax ('{"about":"…POST /api/agenda/refresh
+HTTP/1.1')`. The trigger was ordinary — a restart mints a new per-launch token,
+an open tab still holds the old one, its save gets a 403, and the *following*
+call dies with a message about neither. So the body is read first and every
+refusal comes after it. A body too large to be worth draining is the one
+exception, and it closes the connection instead — `_send` emits `Connection:
+close` whenever the handler has decided to drop it, because a client that kept
+the socket would send its next request into a closed one.
+
+**And the 403 says what actually happened.** *"bad token"* reads like a
+break-in and does not tell you the fix; it now reads *"this page is from an
+earlier run of the server — reload it"*, which is what it almost always is.
+
 **Claude's output is escaped before it is rendered.** It quotes your updates
 back at you, so it is untrusted text — `md()` escapes first and introduces tags
 second.

@@ -2,6 +2,8 @@ brain.db
 brain.db-shm
 brain.db-wal
 *.bak
+*.bak-shm
+*.bak-wal
 .venv/
 __pycache__/
 

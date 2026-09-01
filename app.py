@@ -585,6 +585,12 @@ class Handler(BaseHTTPRequestHandler):
                          "default-src 'none'; style-src 'unsafe-inline'; "
                          "script-src 'unsafe-inline'; connect-src 'self'; "
                          "base-uri 'none'; form-action 'none'")
+        # A connection we are about to drop has to say so. The only case that
+        # sets this itself is a body too large to drain (see `do_POST`), and a
+        # client that kept the socket would send its next request into a closed
+        # one. `send_header` also honours a client's own `Connection: close`.
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -614,18 +620,38 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": repr(e)})
 
     def do_POST(self):
+        # The body is read before anything can refuse the request, and that is
+        # not tidiness. Returning early on a bad host, an unknown path or a
+        # stale token leaves the body unread in the socket, and the connection
+        # is kept alive — so the next request parses those bytes as its own
+        # request line. Seen in the log as
+        # `Bad request syntax ('{"about":"...POST /api/agenda/refresh HTTP/1.1')`
+        # after a restart minted a new token: one 403 turned into a 400 on the
+        # following call, and neither said what had actually happened.
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY:
+            # Too big to be worth draining, so the connection cannot safely be
+            # reused — whatever follows would be read as a request line. Close
+            # it rather than leave the next call to fail as a syntax error.
+            self.close_connection = True
+            return self._json(413, {"error": "bad body length"})
+        raw = self.rfile.read(n) if n > 0 else b""
         if not self._host_ok():
             return self._json(421, {"error": "bad host"})
         path = urlparse(self.path).path
         if path not in WRITES:
             return self._json(404, {"error": "not found"})
         if not self._auth_ok():
-            return self._json(403, {"error": "bad token"})
-        n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0 or n > MAX_BODY:
+            # Almost always a page left open across a restart: the token is
+            # per-launch, so the tab is holding one that no longer exists. Say
+            # that, because "bad token" reads like a break-in and the fix is a
+            # reload.
+            return self._json(403, {"error": "this page is from an earlier run"
+                                    " of the server — reload it"})
+        if n <= 0:
             return self._json(413, {"error": "bad body length"})
         try:
-            return self._json(200, WRITES[path](json.loads(self.rfile.read(n))))
+            return self._json(200, WRITES[path](json.loads(raw)))
         except ai.AIError as e:
             # Claude failing is normal operation, not a server fault: the CLI
             # may be missing, logged out, rate limited, or just slow.
