@@ -228,7 +228,10 @@ def post_me(b):
     doing it quietly: seventeen briefs vanishing without a word would read as a
     bug, and knowing the number is how you decide whether to rebuild now.
     """
-    return store.set_me(b.get("about") or "")
+    v = b.get("about") or ""
+    if not isinstance(v, str):
+        raise ValueError("about must be text")
+    return store.set_me(v)
 
 
 def api_todo(q):

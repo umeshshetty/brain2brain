@@ -405,7 +405,12 @@ def backup() -> dict:
     return {"path": str(dst), "bytes": dst.stat().st_size, "made": True}
 
 
-ME_MAX = 4000
+# A real personal-context file is a document, not a paragraph — the thing this
+# emulates is an 841-line CLAUDE.md re-read every session, and the first person
+# to paste one in lost three of its four parts to a 4,000-character cap that
+# said nothing. Generous, because it competes with 200,000 characters of notes
+# and loses; bounded, because it rides on top of every one of the seven calls.
+ME_MAX = 20000
 
 
 def me() -> dict:
@@ -444,7 +449,13 @@ def set_me(about: str) -> dict:
     back at you rather than interpreting it, and it answered the question that
     was actually asked. Nothing touches the updates.
     """
-    about = (about or "").strip()[:ME_MAX]
+    about = (about or "").strip()
+    # Refused, never trimmed. Silently keeping the first 4,000 characters of
+    # something you wrote is a partial write to text that cannot be
+    # regenerated, and it looks exactly like a successful save.
+    if len(about) > ME_MAX:
+        raise ValueError(f"that is {len(about):,} characters and the limit is"
+                         f" {ME_MAX:,} — nothing was saved")
     conn = connect()
     try:
         with conn:

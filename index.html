@@ -80,6 +80,7 @@
   /* Who the reader is. Loud while it is empty, because an app that does not
      know who you are writes every brief for nobody in particular; one dim
      line once it is filled, because then it has done its job. */
+  .warnt { font-size:12.5px; color:var(--warn); font-weight:500; }
   .menudge { border-style:dashed; }
   .menudge b { display:block; margin-bottom:4px; }
   .menudge .dim { display:block; font-size:13px; line-height:1.5;
@@ -694,6 +695,9 @@ let todoIns = false;
 // re-renders the whole shell and a half-typed idea must not be a casualty of
 // that. Cleared only by saving it.
 let noteDraft = "", noteTags = [];
+// Must equal store.ME_MAX. The box counts against it and the route refuses on
+// it; a count that disagreed with the refusal would be worse than no count.
+const ME_MAX = 20000;
 /* Whether the "read what needs reading" button also covers pages whose pane is
    merely behind, on top of the ones never read at all. Off: an unread page is
    a hole in the list, a stale one is only out of date, and they are not worth
@@ -1092,11 +1096,12 @@ async function home(kind) {
           every brief, both panes, prep and every Ask. It decides what gets
           picked out of your notes and how you are addressed — never what those
           notes say. Yours, stored as typed; no model writes it.</div>
-        <textarea id="metext" rows="8"
+        <textarea id="metext" rows="18"
           placeholder="${esc(ME_HINT)}">${esc(me.about || "")}</textarea>
         <div class="row" style="margin-top:10px">
           <button class="go" id="mesave">Save</button>
           <button class="link" id="mecancel">cancel</button>
+          <span class="dim" id="mecount" style="font-size:12.5px"></span>
           <span class="dim" style="margin-left:auto;font-size:13px"
             >saving drops every brief written for whoever you were</span>
         </div>
@@ -1432,7 +1437,20 @@ async function home(kind) {
       await route();
       toast("Now updated");
     }, AI_LABEL.now());
-    if (meOpen && $("#metext")) $("#metext").focus();
+    if (meOpen && $("#metext")) {
+      // Counted as you type, and loud before you press Save rather than after:
+      // over the cap the save is refused outright, because trimming text you
+      // wrote and cannot regenerate looks exactly like a save that worked.
+      const t = $("#metext"), c = $("#mecount");
+      const count = () => {
+        const n = (t.value || "").length, over = n - ME_MAX;
+        c.textContent = over > 0
+          ? `${over.toLocaleString()} over the limit — will not save`
+          : `${n.toLocaleString()} of ${ME_MAX.toLocaleString()}`;
+        c.className = over > 0 ? "warnt" : "dim";
+      };
+      t.oninput = count; count(); t.focus();
+    }
     if ($("#actnote")) $("#actnote").focus();
   }
   wire();
