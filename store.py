@@ -121,6 +121,30 @@ CREATE TABLE IF NOT EXISTS priorities (
 CREATE UNIQUE INDEX IF NOT EXISTS priorities_item
     ON priorities(IFNULL(project_id, 0), key);
 
+-- A label you put on one item of the pane, in your own words.
+--
+-- Identical identity discipline to `priorities` above, and for the same
+-- reason: an item is derived, rewritten wholesale on every rebuild, and
+-- addressed by position. So a tag is keyed by the page and the item's own
+-- words, and when the wording changes the tags are *lost* rather than landing
+-- on whatever took that position. One row per tag rather than a list in a
+-- column, so a filter is an index lookup and removing one tag is a DELETE.
+--
+-- The vocabulary is not fixed and is never suggested by a model. It is
+-- whatever you have typed before, offered back to you — a tag a model invented
+-- would vary between rebuilds, and a filter built on it would quietly mean
+-- something different each morning.
+CREATE TABLE IF NOT EXISTS tags (
+    id         INTEGER PRIMARY KEY,
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    key        TEXT NOT NULL,
+    tag        TEXT NOT NULL,         -- lowercased, whitespace collapsed
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS tags_item
+    ON tags(IFNULL(project_id, 0), key, tag);
+CREATE INDEX IF NOT EXISTS tags_tag ON tags(tag);
+
 -- An update has one home — the project or person you wrote it in — and any
 -- number of links to others. A note from a 1-1 that is really about the GoBMP
 -- migration is linked to GoBMP; it is not copied there. Copying raw text would
@@ -1377,6 +1401,114 @@ def set_priority(project_id, text: str, rank: int) -> dict:
                     " rank = excluded.rank, created_at = excluded.created_at",
                     (pid, key, rank, now()))
         return {"project_id": pid, "key": key, "rank": rank}
+    finally:
+        conn.close()
+
+
+TAG_MAX = 24          # a label, not a sentence
+TAGS_PER_ITEM = 8
+
+
+def _tkey(tag: str) -> str:
+    """A tag's identity: lowercased, whitespace collapsed, no leading #.
+
+    So `Waiting`, `waiting` and `#waiting` are one tag rather than three
+    filters that each show a third of what you meant.
+    """
+    return " ".join((tag or "").replace("#", " ").split()).lower()
+
+
+def tags() -> list[dict]:
+    """Every tag you have put on an item, for the list to join against.
+
+    Sent whole for the reason `priorities` is: there are as many as you have
+    bothered to set, and drawing two hundred items should not cost two hundred
+    queries.
+    """
+    conn = connect()
+    try:
+        return _rows(conn.execute(
+            "SELECT project_id, key, tag FROM tags ORDER BY tag, id"))
+    finally:
+        conn.close()
+
+
+def set_tag(project_id, text: str, tag: str, on: bool = True) -> dict:
+    """Put one label on an item, or take it off. Writes nothing to the log.
+
+    Like `set_priority`, this records how you want the list read rather than
+    work you did, so it stays out of the one thing that cannot be regenerated.
+    """
+    key = _pkey(text)
+    if not key:
+        raise ValueError("an item needs text to carry a tag")
+    t = _tkey(tag)
+    if not t:
+        raise ValueError("a tag needs a word")
+    if len(t) > TAG_MAX:
+        raise ValueError(f"a tag is a label, not a sentence — {TAG_MAX}"
+                         " characters at most")
+    pid = int(project_id) if project_id else None
+    conn = connect()
+    try:
+        with conn:
+            if pid is not None and not conn.execute(
+                    "SELECT 1 FROM projects WHERE id = ?", (pid,)).fetchone():
+                raise ValueError("no such page")
+            if not on:
+                conn.execute("DELETE FROM tags WHERE"
+                             " IFNULL(project_id, 0) = IFNULL(?, 0)"
+                             " AND key = ? AND tag = ?", (pid, key, t))
+                return {"project_id": pid, "key": key, "tag": t, "on": False}
+            # A cap per item, because a row wearing a dozen labels has stopped
+            # being filterable and the list is what this exists to narrow.
+            n = conn.execute("SELECT COUNT(*) FROM tags WHERE"
+                             " IFNULL(project_id, 0) = IFNULL(?, 0) AND key = ?"
+                             " AND tag <> ?", (pid, key, t)).fetchone()[0]
+            if n >= TAGS_PER_ITEM:
+                raise ValueError(f"that item already has {TAGS_PER_ITEM} tags")
+            conn.execute(
+                "INSERT INTO tags (project_id, key, tag, created_at)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(IFNULL(project_id, 0), key, tag) DO NOTHING",
+                (pid, key, t, now()))
+        return {"project_id": pid, "key": key, "tag": t, "on": True}
+    finally:
+        conn.close()
+
+
+def rename_tag(old: str, new: str) -> dict:
+    """Rename one tag everywhere, or delete it everywhere when `new` is empty.
+
+    A vocabulary you grow by typing acquires near-duplicates — `waiting` and
+    `waiting on`— and without this the only cure is finding every item that
+    wears one. Merging into a tag an item already has is not a conflict: the
+    row is simply dropped, because the item ends up wearing the tag either way.
+    """
+    a = _tkey(old)
+    if not a:
+        raise ValueError("which tag?")
+    b = _tkey(new)
+    if len(b) > TAG_MAX:
+        raise ValueError(f"a tag is a label, not a sentence — {TAG_MAX}"
+                         " characters at most")
+    conn = connect()
+    try:
+        with conn:
+            n = conn.execute("SELECT COUNT(*) FROM tags WHERE tag = ?",
+                             (a,)).fetchone()[0]
+            if not b:
+                conn.execute("DELETE FROM tags WHERE tag = ?", (a,))
+                return {"tag": a, "to": None, "items": n}
+            if b != a:
+                # Anything that would collide has the destination already.
+                conn.execute(
+                    "DELETE FROM tags WHERE tag = ? AND EXISTS ("
+                    "  SELECT 1 FROM tags o WHERE o.tag = ?"
+                    "  AND IFNULL(o.project_id, 0) = IFNULL(tags.project_id, 0)"
+                    "  AND o.key = tags.key)", (a, b))
+                conn.execute("UPDATE tags SET tag = ? WHERE tag = ?", (b, a))
+        return {"tag": a, "to": b, "items": n}
     finally:
         conn.close()
 

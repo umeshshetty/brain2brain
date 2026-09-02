@@ -242,7 +242,8 @@ def api_todo(q):
     answer to "what is happening" and the wrong one to "what do I owe". On a
     real store the difference was 20 items against 172.
     """
-    return {"pages": store.all_page_agendas(), "priorities": store.priorities()}
+    return {"pages": store.all_page_agendas(), "priorities": store.priorities(),
+            "tags": store.tags()}
 
 
 def post_priority(b):
@@ -254,6 +255,26 @@ def post_priority(b):
     """
     return store.set_priority(_int(b.get("project_id")), b.get("text") or "",
                               b.get("rank"))
+
+
+def post_tag(b):
+    """Put one of your own labels on an item, or take it off.
+
+    Named by the item's text like a priority, for the same reason: a position
+    means something different after the next rebuild. No Claude call, nothing
+    written to the log.
+    """
+    return store.set_tag(_int(b.get("project_id")), b.get("text") or "",
+                         b.get("tag") or "", bool(b.get("on", True)))
+
+
+def post_tag_rename(b):
+    """Rename one tag everywhere, or drop it everywhere with an empty name.
+
+    The vocabulary is grown by typing, so it accumulates near-duplicates. The
+    alternative to this is hunting down every item wearing the old one.
+    """
+    return store.rename_tag(b.get("tag") or "", b.get("to") or "")
 
 
 def post_summarize(b):
@@ -551,6 +572,8 @@ WRITES = {
     "/api/summarize": post_summarize,
     "/api/ask": post_ask,
     "/api/priority": post_priority,
+    "/api/tag": post_tag,
+    "/api/tag/rename": post_tag_rename,
     "/api/ask-all": post_ask_all,
     "/api/ask-all/delete": post_delete_store_answer,
 }

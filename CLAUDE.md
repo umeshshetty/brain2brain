@@ -876,6 +876,65 @@ not text you typed but a decision you made, and it points at something
 disposable — which is exactly why it needed an identity of its own rather than
 a place in a list.
 
+## Chasing a hundred of them
+
+**User request, 2026-09-02.** *"in the all notes view, can I have some tags and
+also be able to filter / search easily? right now 100 to dos make it diff to
+chase."*
+
+A hundred and seventy rows is the list working correctly and being unusable. So
+the page grew a filter, and every part of it is a facet the rows were already
+carrying: **which group** they are in (overdue · today · this week · later · to
+do), **whether the page is a project or a person**, and **which page**. Plus one
+substring over the words already on screen — the item, the quote under it, and
+the name of the page it belongs to, so *chase one page by name* is a word rather
+than a trip to the select.
+
+**This is find-in-page again, at the scale of the list rather than one page.**
+No request, no model, no index, nothing written anywhere. Every row is already
+in the browser, so a filter over an array runs on every keystroke and can afford
+to be dumb — the clever matching is reserved for the places that *create* an
+edge, because a false positive there files something. It lives in no URL, for
+the same reason search does not: it is how you are looking right now, not a
+place you keep.
+
+**A chip says what it would leave you with, not what exists.** Counted against
+everything else that is on, so *Later 0* while Projects is selected is telling
+you the truth about where you are rather than a total you would have to
+subtract. A chip that would leave nothing is dimmed rather than removed —
+disappearing furniture is how you stop trusting a count.
+
+**And it appears only past eight rows.** Below that the list is its own answer
+and a row of chips over eight items is furniture. It appears anyway while
+something is filtering, so turning a filter off is never harder than turning it
+on.
+
+**A tag is the one thing here you write yourself.** `tags` is keyed exactly as
+`priorities` is — the page and the item's own words, lowercased with whitespace
+collapsed — because it has exactly the same difficulty: an item is rewritten
+wholesale on every rebuild and addressed by position, so a label pinned to a
+position would land on a different item. When the wording changes the tags are
+**lost rather than misapplied**, which is the failure that shows itself. One row
+per tag rather than a list in a column, so filtering is an index lookup and
+taking one off is a `DELETE`.
+
+| | |
+|---|---|
+| **Sixth thing no model writes** | After `updates.body`, `me.about`, `projects.about`, `projects.guidance` and `priorities.rank`. A tag a model invented would vary between rebuilds, and a filter built on one would quietly mean something different each morning. |
+| **The vocabulary is what you have typed** | Offered back as buttons on the row and as a datalist in the box. Nothing suggests a tag; near-duplicates are the real failure mode and the cure for them is the next row, not a model. |
+| **Rename or drop it everywhere** | One call over the whole vocabulary. Merging onto a tag an item already wears is not a conflict — the row is dropped, because the item ends up wearing it either way. Without this the only cure for `waiting` beside `waiting on` is finding every item that wears one. |
+| **Eight per item** | A row wearing a dozen labels has stopped being filterable, and narrowing the list is what this exists for. |
+| **Drawn with a hash you never type** | `#waiting`, on a dashed chip. A tag and a facet are different kinds of thing — one is a fact about the item, the other is a word you chose — and two rows of identical pills would say they were the same. |
+| **It writes nothing to the log** | Like a priority and unlike `done` · `note` · `date`. It records how you want the list read, not work you did, so it stays out of the one thing that cannot be regenerated. A store test asserts the updates are untouched. |
+
+**Two dead controls turned up while wiring this and are fixed.** *also show N
+insights* and *also refresh the N behind* both re-rendered against a list that
+had been computed once, when the page loaded — so the label flipped and nothing
+under it moved. Everything derived from state a button can flip is now a
+function of it, recomputed per render. A control that changes only its own words
+is worse than no control, and a test presses each of them and reads the list
+back.
+
 ## Dates — the pane on a page
 
 **User request, 2026-08-28.** *"some key notes, updates, deadlines, info for a

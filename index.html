@@ -192,6 +192,40 @@
      because the row's own text already goes there, but this page is a list of
      work across everything and getting to the page is half of what it is for. */
   .todo a.proj { text-decoration:none; }
+  /* the filter bar */
+  .tf .chips { margin-bottom:10px; }
+  .tf .chip { cursor:pointer; font-family:inherit; font-size:12.5px;
+              padding:4px 11px; }
+  .tf .chip.off { opacity:.4; }
+  .tf .sep { width:1px; align-self:stretch; background:var(--line); margin:2px 4px; }
+  .tf select { font-family:inherit; font-size:12.5px; padding:4px 8px;
+               border-radius:999px; border:1px solid var(--line);
+               background:var(--card); color:var(--ink); max-width:220px; }
+  .tf .chip.tag { border-style:dashed; }
+  .tf .chip.tag.on { border-style:solid; }
+  .tf .lft { margin-left:auto; font-size:12.5px; color:var(--dim);
+             font-variant-numeric:tabular-nums; }
+  .tf .lft b { color:var(--ink); font-weight:600; }
+  .tf .ren { display:flex; gap:6px; align-items:center; margin:-4px 0 12px;
+             font-size:12.5px; }
+  .tf .ren input { font-family:inherit; font-size:12.5px; padding:4px 9px;
+                   border-radius:6px; border:1px solid var(--line);
+                   background:var(--card); color:var(--ink); width:170px; }
+  /* your own labels, on a row */
+  .item .tags { display:inline-flex; gap:5px; flex-wrap:wrap; }
+  .item .tags .tg {
+    font-family:inherit; font-size:11px; padding:1px 7px; border-radius:999px;
+    border:1px solid var(--line); background:var(--card); color:var(--dim);
+    cursor:pointer; white-space:nowrap;
+  }
+  .item .tags .tg:hover { border-color:var(--warn); color:var(--warn); }
+  .item .tags .tg i { font-style:normal; opacity:.5; margin-left:3px; }
+  .tagform { display:flex; gap:7px; align-items:center; flex-wrap:wrap; }
+  .tagform input { font-family:inherit; font-size:13px; padding:6px 10px;
+                   border-radius:6px; border:1px solid var(--line);
+                   background:var(--bg); color:var(--ink); width:200px; }
+  .tagform .sug { display:flex; gap:5px; flex-wrap:wrap; }
+  .tagform .sug button { font-size:11px; padding:2px 8px; border-radius:999px; }
   .todo a.proj:hover { border-color:var(--accent); color:var(--accent); }
   /* High · Normal · Low. Three buttons rather than one that cycles: you should
      be able to say "low" without passing through "high" on the way. */
@@ -706,6 +740,19 @@ let todoStale = false;
 /* Which page is being read, while the button is working through them. */
 let todoBuild = null;
 
+/* How you are looking at the to-do list right now. Every part of it is a
+   substring or an exact match over rows already in memory — no request, no
+   model, nothing stored — the same split find-in-page makes: "who else has
+   said this" is a question about the store, "which of these do I want" is a
+   question about the list in front of you, and the second one is answered by
+   the list itself.
+
+   Module state rather than the URL, for the reason search is: it is how you
+   are looking at something, not a place you keep. */
+let todoQ = "", todoWhen = "", todoWho = "", todoPg = 0, todoTags = [];
+/* The one tag being renamed, when exactly one is selected. */
+let todoRen = null;
+
 /* An item's identity, and it must agree with `store._pkey` exactly — a
    priority set here and looked up there by a different rule would simply never
    be found again. Lowercased with whitespace collapsed, and nothing more. */
@@ -728,7 +775,16 @@ const rankOf = (prios, it) => {
  * item there belongs to the page you are looking at, and stamping each row
  * with the name at the top of the screen is noise. */
 function paneItem(it, i, p, all, opt = {}) {
-    const { chip = true, link = false, prio = null } = opt;
+    // `tags` is this item's own labels, or null on a pane that does not offer
+    // them. `vocab` is every tag you have used, offered back as buttons —
+    // typing a near-duplicate is how a filter quietly stops finding half of
+    // what you meant.
+    const { chip = true, link = false, prio = null, tags = null,
+            vocab = [], q = "" } = opt;
+    // Escapes first and marks second, like `md()` and `hilite()` everywhere
+    // else: this is Claude's text quoted back, so nothing may introduce a tag
+    // before the escaping has run.
+    const mk = t => q ? hilite(t || "", q) : esc(t || "");
     const open = i === openAct;
     const chipHtml = !chip ? "" : p
       ? `<${link ? "a" : "span"} class="proj${p.kind === "person" ? " person" : ""}"
@@ -738,10 +794,10 @@ function paneItem(it, i, p, all, opt = {}) {
     <div class="item ${groupOf(it).replace(" ", "")}${it.done ? " done" : ""}${
       prio ? ` pri-${prio}` : ""}" data-item="${i}">
       <div class="txt">${p ? `<a href="#/p/${p.id}"
-        style="color:inherit;text-decoration:none">${esc(it.text)}</a>` : esc(it.text)}</div>
+        style="color:inherit;text-decoration:none">${mk(it.text)}</a>` : mk(it.text)}</div>
       <div class="src">
         ${chipHtml}
-        ${it.quote ? `<span class="q">“${esc(it.quote)}”</span>` : ""}
+        ${it.quote ? `<span class="q">“${mk(it.quote)}”</span>` : ""}
         ${it.date ? `<span class="day">${esc(dayLabel(it.date))}</span>` : ""}
       </div>
       <div class="acts">
@@ -751,6 +807,10 @@ function paneItem(it, i, p, all, opt = {}) {
               class="${prio === r ? `on${r === 1 ? " hi" : r === -1 ? " lo" : ""}` : ""}"
               >${lbl}</button>`
           ).join("")}</span>`}
+        ${tags === null ? "" : `<span class="tags">${tags.map(t =>
+          `<button class="tg" data-tagoff="${esc(t)}" data-i="${i}"
+            title="remove this tag">${esc(t)}<i>×</i></button>`).join("")}
+          <button class="tg" data-act="tag" data-i="${i}">+ tag</button></span>`}
         ${it.done || it.kind === "insight" ? "" : `<button data-act="done" data-i="${i}">done</button>`}
         <button data-act="note" data-i="${i}">note</button>
         ${it.kind === "insight" ? "" : `<button data-act="date" data-i="${i}"
@@ -760,6 +820,18 @@ function paneItem(it, i, p, all, opt = {}) {
       </div>
       ${open ? `
       <div class="act">
+        ${openKind === "tag" ? `<div class="tagform">
+          <input id="tagnew" list="taglist" autocomplete="off" spellcheck="false"
+            maxlength="24" placeholder="one word — waiting, switzerland, q3">
+          <button class="go" id="taggo">Add</button>
+          <button id="actcancel">cancel</button>
+          ${vocab.length ? `<span class="sug">${vocab.filter(t => !tags.includes(t))
+            .slice(0, 12).map(t => `<button data-tagadd="${esc(t)}"
+              data-i="${i}">${esc(t)}</button>`).join("")}</span>` : ""}
+          <span class="why" style="margin-left:auto;flex-basis:100%">Yours, not
+            Claude’s. Stored against the item’s own words, so a rewording
+            loses it rather than moving it onto something else.</span>
+        </div>` : `
         ${openAct === i && openKind === "date" ? `<input type="date" id="actdate"
           value="${esc(it.date || "")}">` : ""}
         <textarea id="actnote" placeholder="${
@@ -775,7 +847,7 @@ function paneItem(it, i, p, all, opt = {}) {
           <button id="actcancel">cancel</button>
           <span class="why" style="margin-left:auto">goes into
             ${p ? esc(p.name) : "the log"} as an update</span>
-        </div>
+        </div>`}
       </div>` : ""}
     </div>`;
 }
@@ -2143,7 +2215,17 @@ async function projectPage(id, scope) {
  */
 async function todoPage() {
   app.className = "wrap wide";
-  const { pages, priorities: prios } = await api("/api/todo");
+  const { pages, priorities: prios, tags: allTags = [] } = await api("/api/todo");
+
+  // Your labels, indexed by the pair that identifies an item — the page and
+  // its own words — which is exactly what `store.set_tag` keys them on.
+  const tagIdx = new Map();
+  for (const t of allTags) {
+    const k = `${t.project_id || 0}:${t.key}`;
+    if (!tagIdx.has(k)) tagIdx.set(k, []);
+    tagIdx.get(k).push(t.tag);
+  }
+  const vocab = [...new Set(allTags.map(t => t.tag))].sort();
 
   // One flat list of rows. Each carries the page and the item's index *within
   // that page's pane*, because that pair is what `/api/page/act` addresses and
@@ -2154,11 +2236,17 @@ async function todoPage() {
     (pg.items || []).forEach((it, idx) => every.push({ pg, it, idx }));
   const owed = every.filter(r => r.it.kind !== "insight");
   const nIns = every.length - owed.length;
-  const rows = todoIns ? every : owed;
 
+  /* Everything below is a function of module state that a button can flip, so
+     it is recomputed on every render rather than captured once. It used to be
+     captured: `also show N insights` and `also refresh the N behind` both
+     re-rendered against the list they were built from, so the label flipped
+     and nothing under it moved. A control that changes only its own words is
+     worse than no control. */
+  const rowsOf = () => todoIns ? every : owed;
   const missing = pages.filter(p => !p.built);
   const behind = pages.filter(p => p.built && p.stale);
-  const todoRead = missing.concat(todoStale ? behind : []);
+  const readOf = () => missing.concat(todoStale ? behind : []);
 
   /* Manual priority is a lift, not a ranking of its own. What you marked high
      rises above everything and what you marked low sinks below it; in between,
@@ -2176,6 +2264,29 @@ async function todoPage() {
     [-1, "Low",   "you pushed these down"],
   ];
   const key = r => `${r.pg.id}:${r.idx}`;
+  const tagsOf = r => tagIdx.get(`${r.pg.id}:${pkey(r.it.text)}`) || [];
+
+  /* The filter. One substring over the words already on screen — the item, the
+     quote under it, and the page it belongs to — plus exact matches on the
+     facets the rows were already carrying. Nothing here asks the server
+     anything: at a hundred and fifty rows a filter over an array is instant,
+     and being dumb is the point for a read that writes nothing. */
+  const hay = r => `${r.it.text} ${r.it.quote || ""} ${r.pg.name}`.toLowerCase();
+  const NOW = () => ({ q: todoQ, when: todoWhen, who: todoWho, pg: todoPg,
+                       tags: todoTags });
+  const match = (r, f) =>
+       (!f.q || hay(r).includes(f.q.toLowerCase()))
+    && (!f.when || groupOf(r.it) === f.when)
+    // A page with no kind at all is a project, here as everywhere else.
+    && (!f.who || (r.pg.kind || "project") === f.who)
+    && (!f.pg || r.pg.id === f.pg)
+    && f.tags.every(t => tagsOf(r).includes(t));
+  const shownOf = () => rowsOf().filter(r => match(r, NOW()));
+  // What a chip would leave you with, given everything else that is on — so
+  // the number on an unpressed chip is a preview rather than a total.
+  const would = over => rowsOf().filter(r => match(r, { ...NOW(), ...over })).length;
+  const filtering = () =>
+    !!(todoQ || todoWhen || todoWho || todoPg || todoTags.length);
 
   const shell = () => `
     <div class="head">
@@ -2184,7 +2295,8 @@ async function todoPage() {
     </div>
     <h1 style="margin-bottom:4px">To do</h1>
     <div class="dim" style="font-size:13px;margin-bottom:16px">
-      ${owed.length} open across ${pages.filter(p => p.built).length} of
+      ${owed.length} open across
+      ${pages.filter(p => p.built).length} of
       ${pages.length} page${pages.length === 1 ? "" : "s"}, read one page at a
       time so nothing is crowded out by a busier one.
       ${nIns ? `<button class="link" id="todoins">${todoIns
@@ -2198,7 +2310,7 @@ async function todoPage() {
         <div class="dim" style="font-size:12.5px;margin-top:5px">One Claude
           call per page, one at a time. Leaving this page stops it.</div>
       </div>`
-    : todoRead.length ? `<div class="card${missing.length ? " about empty" : ""}"
+    : readOf().length ? `<div class="card${missing.length ? " about empty" : ""}"
         style="margin-bottom:16px">
         <div class="row" style="align-items:baseline">
           <b>${missing.length
@@ -2208,12 +2320,12 @@ async function todoPage() {
             : `${behind.length} page${behind.length === 1 ? "" : "s"} ${
                behind.length === 1 ? "is" : "are"} behind`}</b>
           <span class="sp" style="margin-left:auto"></span>
-          <button class="go" id="todobuild">Read ${todoRead.length}
-            page${todoRead.length === 1 ? "" : "s"}</button>
+          <button class="go" id="todobuild">Read ${readOf().length}
+            page${readOf().length === 1 ? "" : "s"}</button>
         </div>
         <div class="dim" style="font-size:12.5px;margin-top:6px">
-          ${todoRead.map(p => esc(p.name)).join(" · ")}
-          <br>${todoRead.length} Claude call${todoRead.length === 1 ? "" : "s"},
+          ${readOf().map(p => esc(p.name)).join(" · ")}
+          <br>${readOf().length} Claude call${readOf().length === 1 ? "" : "s"},
           one at a time — a minute or two.
           ${missing.length && behind.length ? `<button class="link" id="todostale"
             >${todoStale ? "just the unread ones" : `also refresh the
@@ -2221,43 +2333,241 @@ async function todoPage() {
         </div>
       </div>` : ""}
 
-    ${!rows.length ? `<div class="empty">${pages.length
+    ${!rowsOf().length ? `<div class="empty">${pages.length
         ? "Nothing open on any page that has been read."
         : "Nothing anywhere yet. Add an update to a project or a person."}</div>`
-    : `<div class="todo">${BANDS.map(([r, label, note]) => {
-        const mine = rows.filter(x => band(x) === r)
-                         .sort((a, b) => urgency(a) - urgency(b));
+    : `${rowsOf().length > 8 ? `<input type="text" id="tq" class="search"
+        autocomplete="off" spellcheck="false" value="${esc(todoQ)}"
+        placeholder="Filter these ${rowsOf().length} — a word, a name, a page">` : ""}
+      <datalist id="taglist">${vocab.map(t =>
+        `<option value="${esc(t)}">`).join("")}</datalist>
+      <div id="tlist">${listHtml()}</div>`}`;
+
+  /* Its own node, so a keystroke redraws the list and the chip counts under
+     the box and nothing above it — replacing the view would pull the cursor
+     out mid-word. The chips live in here rather than beside the box precisely
+     so their counts can move with what you type without costing you that. */
+  function listHtml() {
+    const rows = rowsOf(), shown = shownOf();
+    // Below nine rows the list is its own answer — a row of chips over eight
+    // items is furniture. It appears anyway while something is filtering, so
+    // that turning a filter off is never harder than turning it on.
+    const bar = rows.length > 8 || filtering() ? filterBar(rows, shown) : "";
+
+    if (!shown.length) return `${bar}<div class="empty">Nothing here matches.
+      <button class="link" id="tclear2">clear the filter</button></div>`;
+    return bar + bands();
+  }
+
+  /* Every facet the rows were already carrying, each chip saying what it would
+     leave you with. Nothing in here asks the server anything or writes
+     anything down: the same read-time correlation the rest of the app does,
+     at the scale of one list. */
+  function filterBar(rows, shown) {
+    const chip = (on, label, n, attr, cls = "") =>
+      `<button class="chip${cls ? " " + cls : ""}${on ? " on" : ""}${
+        !on && !n ? " off" : ""}" ${attr}>${label}<span>${n}</span></button>`;
+    const pgOpts = [...new Map(rows.map(r => [r.pg.id, r.pg])).values()]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    return `
+      <div class="tf">
+        <div class="chips">
+          ${GROUPS.filter(([g]) => todoIns || g !== "insight").map(([g, lbl]) =>
+            chip(todoWhen === g, lbl, would({ when: g }), `data-when="${g}"`)).join("")}
+          <span class="sep"></span>
+          ${[["project", "Projects"], ["person", "People"]].map(([k, lbl]) =>
+            chip(todoWho === k, lbl, would({ who: k }), `data-who="${k}"`)).join("")}
+          <select id="tpage" title="one page only">
+            <option value="0">every page</option>
+            ${pgOpts.map(pg => `<option value="${pg.id}"${pg.id === todoPg
+              ? " selected" : ""}>${esc(pg.name)} · ${would({ pg: pg.id })}</option>`
+            ).join("")}
+          </select>
+          ${filtering() ? `<span class="lft"><b>${shown.length}</b> of
+            ${rows.length}</span>
+            <button class="chip clear" id="tclear">clear</button>` : ""}
+        </div>
+        ${vocab.length ? `<div class="chips">${vocab.map(t => {
+          const on = todoTags.includes(t);
+          // Drawn with the hash you are not required to type. A tag and a
+          // facet are different kinds of thing — one is a fact about the item,
+          // the other is a word you chose — and two rows of identical pills
+          // would say they were the same.
+          return chip(on, `#${esc(t)}`,
+            would({ tags: on ? todoTags : todoTags.concat(t) }),
+            `data-tag="${esc(t)}"`, "tag");
+        }).join("")}</div>` : ""}
+        ${todoRen !== null ? `<div class="ren">
+            <span class="dim">rename “${esc(todoRen)}” everywhere to</span>
+            <input id="trento" value="${esc(todoRen)}" maxlength="24"
+              autocomplete="off" spellcheck="false">
+            <button class="go" id="trensave">Rename</button>
+            <button id="trencancel">cancel</button>
+            <button class="link" id="trendrop">or drop it everywhere</button>
+          </div>`
+        : todoTags.length === 1 ? `<div class="ren">
+            <span class="dim">“${esc(todoTags[0])}”</span>
+            <button class="link" id="trename">rename or drop it everywhere</button>
+          </div>` : ""}
+      </div>`;
+  }
+
+  /* High above, low below, and each page's own reading of urgency in charge in
+     between — which is the part it is good at. */
+  function bands() {
+    const shown = shownOf();
+    return `<div class="todo">${BANDS.map(([r, label, note]) => {
+        const mine = shown.filter(x => band(x) === r)
+                          .sort((a, b) => urgency(a) - urgency(b));
         if (!mine.length) return "";
         // The middle band needs no heading when nothing has been lifted out of
         // it: a list under "Everything else" with no High above it is just the
         // list, and a header for it would be furniture.
-        const bare = r === 0 && !rows.some(x => band(x) !== 0);
+        const bare = r === 0 && !shown.some(x => band(x) !== 0);
         return `${bare ? "" : `<div class="grp ${r === 1 ? "high" : r === -1 ? "low" : ""}">
             <span class="lbl">${label}</span>
             <span class="note">${note}</span><span class="rule"></span>
             <span class="lbl">${mine.length}</span></div>`}
           ${mine.map(x => paneItem(x.it, key(x), x.pg, [],
-            { link: true, prio: band(x) })).join("")}`;
+            { link: true, prio: band(x), tags: tagsOf(x), vocab, q: todoQ })).join("")}`;
       }).join("")}</div>
       <div class="dim" style="font-size:12px;margin-top:22px;line-height:1.5">
-        High and low are yours and they persist. They are stored against the
-        item's own words rather than its place in the list, because the list is
-        rewritten every time a page is read — so a rewording loses a mark
-        rather than moving it onto something else.
-      </div>`}`;
+        High, low and your tags are yours and they persist. They are stored
+        against the item's own words rather than its place in the list, because
+        the list is rewritten every time a page is read — so a rewording loses
+        a mark rather than moving it onto something else.
+      </div>`;
+  }
 
   app.innerHTML = shell();
   const rerender = () => { app.innerHTML = shell(); wire(); };
 
+  // Only the list and the chips under the box, so typing does not pull the
+  // cursor out of it. Everything above — the heading count included — is
+  // redrawn by `rerender()`, which a keystroke never calls.
+  /* Everything inside `#tlist` is replaced whole on every keystroke, so the
+     handlers on the nodes in it have to be put back. Clicks do not need this —
+     they are delegated on `app` — but a `<select>` and a key press are on the
+     element itself, and one that survived only the first draw would work once
+     and then quietly stop. */
+  const wireList = () => {
+    if ($("#tpage")) $("#tpage").onchange = e => { todoPg = +e.target.value; redraw(); };
+    if ($("#tagnew")) $("#tagnew").onkeydown = e => {
+      if (e.key === "Enter") { e.preventDefault(); $("#taggo").click(); }
+      if (e.key === "Escape") { openAct = openKind = null; rerender(); }
+    };
+    if ($("#trento")) $("#trento").onkeydown = e => {
+      if (e.key === "Enter") { e.preventDefault(); $("#trensave").click(); }
+      if (e.key === "Escape") { todoRen = null; redraw(); }
+    };
+  };
+  const redraw = () => {
+    const n = $("#tlist");
+    if (!n) return;
+    n.innerHTML = listHtml();
+    wireList();
+  };
+
   function wire() {
+    wireList();
+    // Only on a full render — a redraw happens while you are typing somewhere
+    // else, and stealing the caret then would be worse than not having it.
+    if ($("#tagnew")) $("#tagnew").focus();
+    if ($("#tq")) {
+      // No debounce and no request: every row is already in memory, so this is
+      // a filter over an array and can afford to run on every letter.
+      $("#tq").oninput = e => { todoQ = e.target.value.trim(); redraw(); };
+      $("#tq").onkeydown = e => {
+        if (e.key !== "Escape") return;
+        todoQ = ""; e.target.value = ""; redraw();
+      };
+    }
     app.onclick = async e => {
       if (e.target.id === "todoins") { todoIns = !todoIns; return rerender(); }
       if (e.target.id === "todostale") { todoStale = !todoStale; return rerender(); }
+
+      // ---- the filter. Nothing here writes anything or asks the server.
+      const w = e.target.closest("[data-when]");
+      if (w) { todoWhen = todoWhen === w.dataset.when ? "" : w.dataset.when;
+               return redraw(); }
+      const wh = e.target.closest("[data-who]");
+      if (wh) { todoWho = todoWho === wh.dataset.who ? "" : wh.dataset.who;
+                return redraw(); }
+      const tg = e.target.closest("[data-tag]");
+      if (tg) {
+        const t = tg.dataset.tag;
+        todoTags = todoTags.includes(t) ? todoTags.filter(x => x !== t)
+                                        : todoTags.concat(t);
+        todoRen = null;
+        return redraw();
+      }
+      if (e.target.id === "tclear" || e.target.id === "tclear2") {
+        todoQ = ""; todoWhen = ""; todoWho = ""; todoPg = 0; todoTags = [];
+        todoRen = null;
+        if ($("#tq")) $("#tq").value = "";
+        return redraw();
+      }
+
+      // ---- the vocabulary itself
+      if (e.target.id === "trename") { todoRen = todoTags[0]; return redraw(); }
+      if (e.target.id === "trencancel") { todoRen = null; return redraw(); }
+      if (e.target.id === "trensave") {
+        const to = ($("#trento").value || "").trim();
+        if (!to) return toast("a tag needs a word", true);
+        const was = todoRen;
+        return busy(e.target, "Renaming", async () => {
+          const r = await api("/api/tag/rename", { tag: was, to });
+          todoTags = todoTags.map(x => x === was ? r.to : x);
+          todoRen = null;
+          await route();
+          toast(`“${was}” is now “${r.to}” on ${r.items} item${
+            r.items === 1 ? "" : "s"}`);
+        });
+      }
+      if (e.target.id === "trendrop") {
+        const was = todoRen;
+        if (!confirm(`Take “${was}” off every item? The items themselves are`
+                     + ` untouched — this drops the label only.`)) return;
+        return busy(e.target, "Dropping", async () => {
+          const r = await api("/api/tag/rename", { tag: was, to: "" });
+          todoTags = todoTags.filter(x => x !== was);
+          todoRen = null;
+          await route();
+          toast(`“${was}” dropped from ${r.items} item${r.items === 1 ? "" : "s"}`);
+        });
+      }
+
+      // ---- a label on one item. Named by the item's own words, like a
+      //      priority, because a position means something else after a rebuild.
+      const off = e.target.closest("[data-tagoff]");
+      if (off) {
+        const row = every.find(x => key(x) === off.dataset.i);
+        await api("/api/tag", { project_id: row.pg.id, text: row.it.text,
+                                tag: off.dataset.tag, on: false });
+        return route();
+      }
+      const add = e.target.closest("[data-tagadd]");
+      if (add) {
+        const row = every.find(x => key(x) === add.dataset.i);
+        await api("/api/tag", { project_id: row.pg.id, text: row.it.text,
+                                tag: add.dataset.tagadd, on: true });
+        openAct = openKind = null;
+        return route();
+      }
+      if (e.target.id === "taggo") {
+        const row = every.find(x => key(x) === openAct);
+        const t = ($("#tagnew").value || "").trim();
+        if (!t) return toast("a tag needs a word", true);
+        await api("/api/tag", { project_id: row.pg.id, text: row.it.text,
+                                tag: t, on: true });
+        openAct = openKind = null;
+        return route();
+      }
       if (e.target.id === "todobuild") {
         // One at a time, and it says whose. `_ai()` serialises these anyway;
         // doing it here as well is what lets the page name the page it is on
         // and stop cleanly when you leave.
-        const mine = todoRead.slice();
+        const mine = readOf().slice();
         for (let n = 0; n < mine.length; n++) {
           if (!/^#\/todo\b/.test(location.hash)) return;   // you left; stop.
           todoBuild = { done: n, total: mine.length, name: mine[n].name };
