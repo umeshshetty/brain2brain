@@ -14,7 +14,7 @@ Four files, stdlib only, no dependencies, no API key.
 
 ```
 app.py        the server — routes, guards, nothing else
-store.py      SQLite. twelve tables
+store.py      SQLite. sixteen tables
 ai.py         every AI feature: a `claude -p` subprocess
 index.html    the whole UI
 ```
@@ -22,10 +22,15 @@ index.html    the whole UI
 ## The one rule
 
 **`updates.body` is raw and never rewritten.** It is stored exactly as you typed
-it. It, `me.about` — who *you* are — `projects.about` — who a page is to you — and
-`projects.guidance` — what you want out of a brief about it — are the only
-things in the database that cannot be regenerated, and no model ever writes any
-of them.
+it. It, `me.about` — who *you* are — `projects.about` — who a page is to you —
+`projects.guidance` — what you want out of a brief about it — and
+`checks.question` — what you check the store against — are the text in the
+database that cannot be regenerated, and no model ever writes any of them.
+
+Three more are not text you typed but decisions you made, and the same rule
+holds for the same reason: `priorities.rank`, `tags.tag` and `check_marks.mark`.
+Eight columns in all, and a test asserts every Claude call site reads the one
+that frames all the others.
 
 Everything else — summaries, answers — is derived and cached. `DELETE FROM
 summaries` costs one Claude call to rebuild. That asymmetry is the design:
@@ -651,6 +656,76 @@ being blocked.
 An answer is keyed by the question that produced it, so the box matches on the
 question itself — which is also how the *Asked across everything* list on the
 home view opens one. Nothing is re-asked unless you press the button.
+
+
+## Check — what it cannot answer
+
+**User request, 2026-09-02.** *"can you use this blueprint ?"*, with a pasted
+architecture document for a personal knowledge system: an extract → confirm →
+commit pipeline, ten entity types, fifteen relation types, per-fact decay,
+privacy tiers, and an eval question set.
+
+Most of it is v1, almost table for table — `bin/ingest.py` is its L1,
+`bin/apply.py` its confirmation loop, `entities`/`entity_aliases`/
+`entity_relations` its ontology, `commitment_revisions` its supersession,
+`bin/guard.py` its privacy tiers. 4,365 lines, and over its whole life it
+extracted **2 entities, 1 relation and 2 decisions out of 18 captures**. v2
+took 47 updates and 207,284 characters in its first five days. The blueprint's
+own failure-mode section names this — *volume is the failure mode, not the
+goal*, *abandonment is the real risk* — and then prescribes the loop that
+caused it. Every gate between you and the store is a place capture stops.
+
+**One idea in it survives that argument, and this is it: a fixed set of
+questions, asked periodically, scored.** It survives because it is a *read*.
+It writes nothing, extracts nothing, and stores no edge, so it cannot be wrong
+in the way a graph is wrong — and it needed no new machinery, because *Ask
+across everything* is already the call it wants.
+
+`#/check`. You write thirty questions you ought to be able to answer, run them,
+and read the score. The answers are the cheap half. **The number worth knowing
+is how many came back empty**, because that list is a list of things to go and
+write down — and it is the only report in this app about what the store does
+*not* hold. Everything else here describes what is in it.
+
+**You write the questions, and no model may.** Seventh thing in the store no
+model writes, after `updates.body`, `me.about`, `projects.about`,
+`projects.guidance`, `priorities.rank` and `tags.tag`. The reason is sharper than for the
+others: a model asked what to ask of a pile of notes proposes what it has just
+read, so every question it wrote would be one the store can already answer and
+the score would be a flattering nothing. The questions that are worth asking
+are the ones that do *not* come from the notes. Four examples ship with the
+empty state, and each one fills the box rather than saving itself — the same
+*stop at the textarea* discipline as drafting a profile.
+
+**You make the mark, and no model may.** Eighth. Yes · Thin · No, three
+buttons like a priority's three bands, pressing the one that is on to take it
+off. The judgement that matters — *it does not know this* — is exactly the one
+a model is worst placed to make about its own answer, because an answer that
+hedges gracefully reads like an answer. Verified on a live store: asked
+something no page covers, the reply was *"The pages do not answer this
+question"* plus where it would have expected to find it, which is right and
+useful and still needs a person to say it counts.
+
+**Nothing new is asked of Claude.** A run is `ask_everything`, N times, saving
+into `store_answers` — so a review answer is an answer, and shows up in *Asked
+across everything* like any other. There is no new prompt, no new cache and no
+new kind of staleness in this whole feature.
+A question rides on stdin under `# Question`, exactly where a typed one
+already does, so `guidance` is still the only user text that reaches argv and
+nothing here widens that surface.
+
+| | |
+|---|---|
+| **A fresh answer costs nothing** | An answer still current by both staleness axes is reused and no call is spent. So a review of a quiet week is close to free and the first one after a busy month is not — in proportion to how much is new to read, which is the right way round. Both halves are printed before you press: *"3 need a fresh read — about 3 minutes. The other 1 reuses an answer the store has not moved under."* |
+| **The browser walks the set, one at a time** | Not one long request. Thirty questions is half an hour of Claude calls, and a request that took half an hour could not say where it had got to and could not be abandoned. Leaving the page stops it where it is; the run keeps every question it already asked, and *Carry on* resumes the same run rather than starting over. |
+| **A run is not stale, ever** | It is a record of what the store could answer on one day. That is a fact about that day and does not go out of date — which is why the trend is a row of numbers and not a row of warnings. |
+| **The set is always the current set** | Deleting a question takes it out of every run it was ever in, finished ones included. That does rewrite history, deliberately: a coverage number is only worth reading against a fixed set, and two runs scored against different sets cannot be compared at all. The confirm dialog says so. |
+| **Deleting an answer keeps the mark** | `answer_id` is `ON DELETE SET NULL`. Answers are disposable like every other derived row; the judgement you made about one is not. |
+| **The gap list is not a to-do list** | Nothing on it can be pressed. One of these closes by your writing the note that answers it and the next run finding it — which is the whole loop, and putting a *done* button on it would let you close a gap without filling it. |
+
+Sat next to *Ask across everything* on the home view rather than in the Now
+pane, because that is what it is a twin of: the same call, asked of a set you
+keep rather than of a question you have this minute.
 
 
 ## Topics

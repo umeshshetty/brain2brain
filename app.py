@@ -326,6 +326,78 @@ def post_ask_all(b):
                                    ctx["dropped"])
 
 
+def api_check(q):
+    """The question set, the latest run's marks, and the trend. One read."""
+    return store.check_page()
+
+
+def post_check_new(b):
+    return store.add_check(b.get("question") or "")
+
+
+def post_check_delete(b):
+    return store.delete_check(_int(b.get("id"), "question"))
+
+
+def post_check_start(b):
+    """Open a run. Nothing is asked here.
+
+    The client then walks the questions one at a time, which is what lets the
+    page name the one it is on, stop cleanly when you navigate away, and pick
+    the same run back up afterwards. Thirty questions is up to half an hour of
+    Claude calls, and a single request that took half an hour would be a
+    request that cannot report progress and cannot be abandoned.
+    """
+    r = store.start_run()
+    r["pending"] = store.pending(r["id"])
+    return r
+
+
+def post_check_ask(b):
+    """One question of the set, against everything.
+
+    The same call `post_ask_all` makes, and it lands in the same table — a
+    review answer is an answer, and it shows up in *Asked across everything*
+    like any other. What is added is the mark row tying it to this run.
+
+    A cached answer that is still fresh by both axes is reused and no call is
+    spent. The store has not moved, so the answer would not either, and a
+    review of a quiet week should cost close to nothing.
+    """
+    run_id = _int(b.get("run_id"), "run")
+    cid = _int(b.get("check_id"), "question")
+    q = next((c for c in store.checks() if c["id"] == cid), None)
+    if not q:
+        raise ValueError("no such question")
+    fresh = store.fresh_answer(q["question"])
+    if fresh:
+        return store.record(run_id, cid, fresh["id"], asked=False)
+    ctx = store.everything_context()
+    if not ctx["total"]:
+        raise ValueError("nothing to read yet — add an update first")
+    with _ai("a question about everything"):
+        answer = ai.ask_everything(ctx["pages"], q["question"], store.today(),
+                                   _me())
+    a = store.save_store_answer(q["question"], answer, ctx["newest"],
+                                ctx["total"], ctx["dropped"])
+    return store.record(run_id, cid, a["id"], asked=True)
+
+
+def post_check_end(b):
+    return store.end_run(_int(b.get("run_id"), "run"))
+
+
+def post_check_mark(b):
+    """What you made of one answer. No model writes this — see `check_marks`."""
+    return store.set_mark(_int(b.get("run_id"), "run"),
+                          _int(b.get("check_id"), "question"),
+                          b.get("mark") or None)
+
+
+def post_check_run_delete(b):
+    return store.delete_run(_int(b.get("id"), "run"))
+
+
 def post_delete_store_answer(b):
     return store.delete_store_answer(int(b["id"]))
 
@@ -545,7 +617,8 @@ READS = {"/api/projects": api_projects,
          "/api/search": api_search,
          "/api/me": api_me,
          "/api/asked": api_asked,
-    "/api/todo": api_todo,
+         "/api/todo": api_todo,
+         "/api/check": api_check,
          "/api/busy": api_busy}
 WRITES = {
     "/api/project/new": post_project,
@@ -576,6 +649,13 @@ WRITES = {
     "/api/tag/rename": post_tag_rename,
     "/api/ask-all": post_ask_all,
     "/api/ask-all/delete": post_delete_store_answer,
+    "/api/check/new": post_check_new,
+    "/api/check/delete": post_check_delete,
+    "/api/check/start": post_check_start,
+    "/api/check/ask": post_check_ask,
+    "/api/check/end": post_check_end,
+    "/api/check/mark": post_check_mark,
+    "/api/check/run/delete": post_check_run_delete,
 }
 
 

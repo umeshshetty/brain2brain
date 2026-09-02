@@ -236,6 +236,63 @@ CREATE TABLE IF NOT EXISTS store_answers (
     dropped           INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL
 );
+
+-- A question you keep, to check the store against.
+--
+-- Everything else derived in here is built when you ask for it and read once.
+-- These are the opposite: a fixed set, asked again months later, so that the
+-- answers can be compared. The number worth knowing is not any one answer but
+-- how many of them the store could not answer at all — that list is what to go
+-- and write down.
+--
+-- Seventh thing in this file that no model writes, after `updates.body`,
+-- `me.about`, `projects.about`, `projects.guidance`, `priorities.rank` and
+-- `tags.tag`. A
+-- question Claude wrote would be one the store can already answer: a model
+-- reading these notes and asked what to ask of them proposes what it has just
+-- read. The whole value here is in the questions that do *not* come from the
+-- notes, and only you know those.
+CREATE TABLE IF NOT EXISTS checks (
+    id         INTEGER PRIMARY KEY,
+    question   TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- One pass over the set.
+CREATE TABLE IF NOT EXISTS check_runs (
+    id         INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    ended_at   TEXT
+);
+
+-- What one question came back with in one run, and what you made of it.
+--
+-- `mark` is the eighth thing no model writes, and it is the point of the
+-- whole table. A model asked whether its own answer was any good grades its
+-- own homework, and the one judgement that matters here -- *the store does not
+-- know this* -- is exactly the one it is worst placed to make, because an
+-- answer that hedges gracefully reads like an answer.
+--
+-- `asked` records whether this run spent a Claude call or reused an answer
+-- that was still fresh. A review of a store that has not moved should be
+-- nearly free, and the page says how much of it will be.
+--
+-- Both ends CASCADE. Deleting a question takes its marks out of every run it
+-- was ever in, including finished ones -- which does rewrite history, and is
+-- deliberate: a coverage number is only worth reading against a fixed set of
+-- questions, and two runs scored against different sets cannot be compared at
+-- all. The set is always the current set.
+CREATE TABLE IF NOT EXISTS check_marks (
+    run_id     INTEGER NOT NULL REFERENCES check_runs(id) ON DELETE CASCADE,
+    check_id   INTEGER NOT NULL REFERENCES checks(id)     ON DELETE CASCADE,
+    -- The answer this run read. ON DELETE SET NULL, because deleting an answer
+    -- from the home view must not take the judgement you made about it.
+    answer_id  INTEGER          REFERENCES store_answers(id) ON DELETE SET NULL,
+    mark       TEXT,                  -- 'yes' | 'thin' | 'no'. NULL = unread.
+    asked      INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, check_id)
+);
 """
 
 
@@ -1892,3 +1949,258 @@ def save_prep(pid: int, body: str, since: str | None, through: int,
     finally:
         conn.close()
     return prep(pid)
+
+
+# -------------------------------------------------------------------- checks
+# A fixed set of questions, asked of everything, and scored by hand.
+#
+# Every other read in this app is one you wanted the answer to. These are asked
+# because the *answers* are not the point: what you learn from running thirty
+# of them is which ones came back empty, and that list is a list of things to
+# go and write down. So the interesting number is the one nothing else here
+# reports — how much of what you need to know is not in the store at all.
+
+MARKS = ("yes", "thin", "no")
+
+
+def checks() -> list[dict]:
+    conn = connect()
+    try:
+        return _rows(conn.execute(
+            "SELECT id, question, created_at FROM checks ORDER BY id"))
+    finally:
+        conn.close()
+
+
+def add_check(question: str) -> dict:
+    """One question. Stored as typed, like every other thing you write here."""
+    q = (question or "").strip()
+    if not q:
+        raise ValueError("write a question")
+    if len(q) > 400:
+        raise ValueError("that is longer than a question")
+    conn = connect()
+    try:
+        dup = conn.execute("SELECT id FROM checks WHERE lower(question) = ?",
+                           (q.lower(),)).fetchone()
+        if dup:
+            raise ValueError("you already ask that one")
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO checks (question, created_at) VALUES (?,?)",
+                (q, now()))
+        return {"id": cur.lastrowid, "question": q}
+    finally:
+        conn.close()
+
+
+def delete_check(cid: int) -> dict:
+    """And its marks, in every run — see the note on `check_marks`."""
+    conn = connect()
+    try:
+        n = conn.execute("SELECT count(*) FROM check_marks WHERE check_id = ?",
+                         (cid,)).fetchone()[0]
+        with conn:
+            gone = conn.execute("DELETE FROM checks WHERE id = ?", (cid,)).rowcount
+        if not gone:
+            raise ValueError("no such question")
+        return {"deleted": cid, "marks": n}
+    finally:
+        conn.close()
+
+
+def _fresh(conn, question: str, newest: int, total: int):
+    """The newest whole-store answer to exactly this question, if the store has
+    not moved under it.
+
+    Same two axes as `store_answers`: the watermark notices the set growing,
+    the count notices it changing. An answer that is still fresh is one this
+    run does not have to spend a Claude call on — which is what makes the
+    second run of a week cheap and the first run after a busy month expensive,
+    in proportion to how much there is that is new to read.
+    """
+    r = conn.execute(
+        "SELECT id, answer, through_update_id, read_updates, created_at"
+        " FROM store_answers WHERE question = ? ORDER BY id DESC LIMIT 1",
+        (question.strip(),)).fetchone()
+    if not r:
+        return None
+    if r["through_update_id"] != newest or r["read_updates"] != total:
+        return None
+    return dict(r)
+
+
+def fresh_answer(question: str):
+    """A still-current whole-store answer to this exact question, or None.
+
+    The one thing a run needs to know before it decides to spend a call.
+    """
+    conn = connect()
+    try:
+        newest = conn.execute("SELECT ifnull(max(id), 0) FROM updates").fetchone()[0]
+        total = conn.execute("SELECT count(*) FROM updates").fetchone()[0]
+        return _fresh(conn, question, newest, total)
+    finally:
+        conn.close()
+
+
+def _run_row(conn, r: dict) -> dict:
+    """One run, scored. The denominator is what it actually asked, not the size
+    of today's set — a question added since simply was not in it."""
+    counts = {m: 0 for m in MARKS}
+    unmarked = 0
+    for m in conn.execute(
+            "SELECT mark FROM check_marks WHERE run_id = ?", (r["id"],)):
+        if m["mark"] in counts:
+            counts[m["mark"]] += 1
+        else:
+            unmarked += 1
+    r = dict(r)
+    r.update(counts)
+    r["unmarked"] = unmarked
+    r["n"] = sum(counts.values()) + unmarked
+    return r
+
+
+def check_page(runs: int = 8) -> dict:
+    """Everything the page needs, in one read and no Claude call.
+
+    The latest run is the one you are looking at: each question carries its
+    mark *in that run* and the answer that run read. Earlier runs come back as
+    scores only — the trend is a row of numbers, and the answers behind an old
+    one are still in `store_answers` where every other answer lives.
+    """
+    conn = connect()
+    try:
+        newest = conn.execute("SELECT ifnull(max(id), 0) FROM updates").fetchone()[0]
+        total = conn.execute("SELECT count(*) FROM updates").fetchone()[0]
+        past = _rows(conn.execute(
+            "SELECT id, started_at, ended_at FROM check_runs ORDER BY id DESC"
+            " LIMIT ?", (runs,)))
+        scored = [_run_row(conn, r) for r in past]
+        run = scored[0] if scored else None
+        marks = {}
+        if run:
+            for m in _rows(conn.execute(
+                    "SELECT check_id, answer_id, mark, asked FROM check_marks"
+                    " WHERE run_id = ?", (run["id"],))):
+                marks[m["check_id"]] = m
+        out, needs = [], 0
+        for c in _rows(conn.execute(
+                "SELECT id, question, created_at FROM checks ORDER BY id")):
+            fresh = _fresh(conn, c["question"], newest, total)
+            c["fresh"] = bool(fresh)
+            if not fresh:
+                needs += 1
+            m = marks.get(c["id"])
+            c["mark"] = m["mark"] if m else None
+            c["asked"] = bool(m["asked"]) if m else False
+            c["done"] = bool(m)
+            # The answer this run read, or — before a run has reached it — the
+            # cached one it would reuse. Both are the same row from the same
+            # table; which of them you are looking at is `done`.
+            a = None
+            if m and m["answer_id"]:
+                a = conn.execute(
+                    "SELECT id, answer, created_at FROM store_answers WHERE id = ?",
+                    (m["answer_id"],)).fetchone()
+                a = dict(a) if a else None
+            c["answer"] = a or (fresh if not m else None)
+            out.append(c)
+        return {"checks": out, "runs": scored, "run": run,
+                "needs": needs, "fresh": len(out) - needs,
+                "pending": [c["id"] for c in out if not c["done"]]}
+    finally:
+        conn.close()
+
+
+def start_run() -> dict:
+    """A new pass. Nothing is asked here — the client walks the questions one
+    at a time so it can name the one it is on and stop when you leave."""
+    conn = connect()
+    try:
+        n = conn.execute("SELECT count(*) FROM checks").fetchone()[0]
+        if not n:
+            raise ValueError("no questions to ask yet")
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO check_runs (started_at) VALUES (?)", (now(),))
+        return {"id": cur.lastrowid, "n": n}
+    finally:
+        conn.close()
+
+
+def pending(run_id: int) -> list[dict]:
+    """The questions this run has not reached. Read fresh each time, so a run
+    you left half-finished this morning resumes rather than starting over."""
+    conn = connect()
+    try:
+        if not conn.execute("SELECT 1 FROM check_runs WHERE id = ?",
+                            (run_id,)).fetchone():
+            raise ValueError("no such run")
+        return _rows(conn.execute(
+            "SELECT id, question FROM checks WHERE id NOT IN"
+            " (SELECT check_id FROM check_marks WHERE run_id = ?) ORDER BY id",
+            (run_id,)))
+    finally:
+        conn.close()
+
+
+def record(run_id: int, check_id: int, answer_id, asked: bool) -> dict:
+    """This run has now read this question. The mark itself stays NULL: that is
+    yours, and it is made after you have read the answer."""
+    conn = connect()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO check_marks (run_id, check_id, answer_id, mark,"
+                " asked, created_at) VALUES (?,?,?,NULL,?,?)"
+                " ON CONFLICT(run_id, check_id) DO UPDATE SET"
+                " answer_id = excluded.answer_id, asked = excluded.asked",
+                (run_id, check_id, answer_id, 1 if asked else 0, now()))
+        return {"run_id": run_id, "check_id": check_id, "answer_id": answer_id,
+                "asked": bool(asked)}
+    finally:
+        conn.close()
+
+
+def end_run(run_id: int) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            conn.execute("UPDATE check_runs SET ended_at = ? WHERE id = ?"
+                         " AND ended_at IS NULL", (now(), run_id))
+        return {"id": run_id}
+    finally:
+        conn.close()
+
+
+def set_mark(run_id: int, check_id: int, mark) -> dict:
+    """Your judgement of one answer. Three values and nothing else — the
+    question is whether the store *held* this, not how well it was written."""
+    if mark is not None and mark not in MARKS:
+        raise ValueError("a mark is yes, thin or no")
+    conn = connect()
+    try:
+        with conn:
+            n = conn.execute(
+                "UPDATE check_marks SET mark = ? WHERE run_id = ? AND check_id = ?",
+                (mark, run_id, check_id)).rowcount
+        if not n:
+            raise ValueError("that run has not read that question yet")
+        return {"run_id": run_id, "check_id": check_id, "mark": mark}
+    finally:
+        conn.close()
+
+
+def delete_run(run_id: int) -> dict:
+    conn = connect()
+    try:
+        with conn:
+            n = conn.execute("DELETE FROM check_runs WHERE id = ?",
+                             (run_id,)).rowcount
+        if not n:
+            raise ValueError("no such run")
+        return {"deleted": run_id}
+    finally:
+        conn.close()

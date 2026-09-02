@@ -245,6 +245,62 @@
   .item.pri--1 { opacity:.7; }
 
   .item .proj.person { border-radius:999px; }
+
+  /* ---- Check: the question set, and what it could not answer -------------
+     A run is thirty Claude calls, so the button that starts one has to say
+     what it costs before you press it, and the bar has to keep saying where
+     it has got to. Everything else here is a list of questions with three
+     buttons under each. */
+  .ck .plan { border:1px solid var(--accent); border-radius:10px;
+              padding:14px 16px; margin-bottom:22px; background:var(--card); }
+  .ck .plan .cost { color:var(--dim); font-size:12.5px; margin-top:6px; }
+  .ck .plan .cost b { color:var(--ink); font-weight:600; }
+  .ck .bar { height:4px; border-radius:999px; background:var(--line);
+             margin:12px 0 8px; overflow:hidden; }
+  .ck .bar i { display:block; height:100%; background:var(--accent);
+               transition:width .2s; }
+  /* The score of one run, as three numbers you can compare to last quarter's.
+     Tabular figures because that comparison is the whole point of the row. */
+  .ck .score { display:flex; gap:16px; flex-wrap:wrap; align-items:baseline;
+               font-variant-numeric:tabular-nums; }
+  .ck .score .n { font-size:26px; font-weight:600; line-height:1; }
+  .ck .score .no .n { color:var(--warn); }
+  .ck .score .lbl { color:var(--dim); font-size:11.5px; letter-spacing:.06em;
+                    text-transform:uppercase; display:block; margin-top:4px; }
+  .ck .trend { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;
+               font-size:12px; color:var(--dim);
+               font-variant-numeric:tabular-nums; }
+  .ck .trend span { border:1px solid var(--line); border-radius:999px;
+                    padding:2px 10px; }
+  .ck .trend span b { color:var(--warn); font-weight:600; }
+  .ck .q { border:1px solid var(--line); border-left:3px solid var(--line);
+           border-radius:8px; background:var(--card); padding:11px 13px;
+           margin-bottom:8px; }
+  .ck .q.no  { border-left-color:var(--warn); }
+  .ck .q.yes { border-left-color:var(--ok); }
+  .ck .q .qh { display:flex; gap:10px; align-items:baseline; }
+  .ck .q .qh b { flex:1; font-size:14px; font-weight:500; line-height:1.4; }
+  .ck .q .ans { margin-top:10px; padding-top:10px;
+                border-top:1px dashed var(--line); }
+  .ck .q .reuse { color:var(--dim); font-size:11.5px; }
+  /* Yes · Thin · No, built like .prio and for the same reason: three buttons
+     rather than one that cycles, so "no" is one press from anywhere. */
+  .ck .mk { display:inline-flex; border:1px solid var(--line);
+            border-radius:999px; overflow:hidden; }
+  .ck .mk button { border:none; border-radius:0; background:none; font-size:11px;
+                   padding:2px 10px; color:var(--dim); letter-spacing:.02em; }
+  .ck .mk button + button { border-left:1px solid var(--line); }
+  .ck .mk button:hover { background:var(--bg); color:var(--ink); }
+  .ck .mk button.on { background:var(--dim); color:var(--bg); font-weight:600; }
+  .ck .mk button.on.y { background:var(--ok);   color:var(--bg); }
+  .ck .mk button.on.n { background:var(--warn); color:var(--bg); }
+  .ck .add { display:flex; gap:8px; margin:6px 0 22px; }
+  .ck .add input { flex:1; font-family:inherit; font-size:14px; padding:9px 12px;
+                   border-radius:8px; border:1px solid var(--line);
+                   background:var(--card); color:var(--ink); }
+  .ck .gap { border:1px solid var(--warn); background:var(--warn-bg);
+             border-radius:10px; padding:14px 16px; margin-bottom:22px; }
+  .ck .gap li { margin:4px 0; }
   .pcard .kind { color:var(--dim); font-weight:400; font-size:13px; margin-left:7px; }
 
   /* The page list. A grid, not a stack: thirty-six pages in one column is a
@@ -1251,6 +1307,15 @@ async function home(kind) {
             href="#/p/${p.id}">${esc(p.name)}</a>`).join("")}</div>
         </div>` : ""}`;
       })() : `<div class="empty">${W.empty}</div>`}
+      <div class="sec">
+        <h2>Check</h2>
+        <div class="card"><a href="#/check" style="text-decoration:none"
+          ><b>A fixed set of questions \u2192</b></a>
+          <div class="dim" style="font-size:12.5px;margin-top:5px">
+            The same call as above, asked of questions you keep rather than one
+            you have right now — so that what it <i>cannot</i> answer is
+            something you can see.</div></div>
+      </div>
       ${asked.length ? `<div class="sec">
         <h2>Asked across everything</h2>
         <div class="card">${asked.slice(0, 8).map(a => `
@@ -2616,12 +2681,269 @@ async function todoPage() {
   wire();
 }
 
+/* --------------------------------------------------------------- check ----
+ * A fixed set of questions, asked of everything, and scored by hand.
+ *
+ * Every other read in this app is one you wanted the answer to. These are the
+ * opposite: you write thirty questions you *ought* to be able to answer, ask
+ * them all, and the number worth knowing is how many came back empty. That
+ * list is a list of things to go and write down — which is the only report in
+ * here about what the store does **not** hold.
+ *
+ * Two things follow from that, and they are the whole design.
+ *
+ * You write the questions. A model asked what to ask of a pile of notes
+ * proposes what it has just read, so it would only ever write questions the
+ * store can already answer, and the score would be a flattering nothing.
+ *
+ * You make the mark. The one judgement that matters — *it does not know this*
+ * — is the one a model is worst placed to make about its own answer, because
+ * an answer that hedges gracefully reads exactly like an answer.
+ *
+ * Nothing new is asked of Claude either. A run is `Ask across everything`, N
+ * times, landing in the same table, showing up in the same list on the home
+ * view. An answer that is still fresh by both staleness axes is reused and
+ * costs nothing, so a review of a quiet week is close to free and the first
+ * one after a busy month is not — in proportion to how much is new to read,
+ * which is the right way round.
+ */
+let ckOpen = null;       // which question's answer is expanded
+let ckDraft = "";        // the box, kept across the re-renders a run causes
+let ckGoing = null;      // {done, total, name} while a run is walking the set
+
+const MARKS = [["yes", "Yes", "y"], ["thin", "Thin", ""], ["no", "No", "n"]];
+
+async function checkPage() {
+  const d = await api("/api/check");
+  const byId = new Map(d.checks.map(c => [c.id, c]));
+  const run = d.run;
+  const left = d.pending.length;
+  // What the rest of this run will actually cost. A question already read by
+  // this run costs nothing, and neither does one whose cached answer the store
+  // has not moved under — so the estimate is neither the size of the set nor
+  // the number of questions left.
+  const spend = d.pending.filter(id => !byId.get(id).fresh).length;
+  const mins = n => n < 1 ? "nothing" : `about ${n} minute${n === 1 ? "" : "s"}`;
+  const gaps = d.checks.filter(c => c.mark === "no");
+  const spent = d.checks.filter(c => c.done && c.asked).length;
+
+  const plan = () => {
+    if (ckGoing) return `<div class="plan">
+      <b>Asking ${ckGoing.done + 1} of ${ckGoing.total}</b>
+      <div class="bar"><i style="width:${
+        Math.round(ckGoing.done / ckGoing.total * 100)}%"></i></div>
+      <div class="cost">${esc(ckGoing.name)}</div>
+      <div class="cost" style="margin-top:8px">One at a time. Leave this page
+        and it stops where it is — the run keeps what it has and you can pick
+        it up again.</div></div>`;
+    if (!d.checks.length) return "";
+    return `<div class="plan">
+      ${left ? `<b>${run && left < d.checks.length
+          ? `${left} question${left === 1 ? "" : "s"} left in this run`
+          : `${d.checks.length} question${d.checks.length === 1 ? "" : "s"} to ask`}</b>
+        <div class="cost">
+          <b>${spend}</b> need a fresh read — ${mins(spend)}.
+          ${d.pending.length - spend
+            ? `The other ${d.pending.length - spend} reuse an answer the store
+               has not moved under, and cost nothing.` : ""}</div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          ${run && left < d.checks.length
+            ? `<button class="go" id="ckresume">Carry on</button>
+               <button id="ckrun">Start a new run</button>`
+            : `<button class="go" id="ckrun">Run the set</button>`}
+        </div>`
+      : `<b>Run finished</b>
+        <div class="cost">${spent
+          ? `${spent} Claude call${spent === 1 ? "" : "s"}` : "No calls"}${
+          d.checks.length - spent
+            ? `, ${d.checks.length - spent} answer${
+                d.checks.length - spent === 1 ? "" : "s"} reused` : ""}.
+          ${run && run.unmarked
+            ? `<b>${run.unmarked}</b> still to read and mark.`
+            : "Every answer marked."}</div>
+        <div style="margin-top:12px"><button id="ckrun">Run it again</button></div>`}
+    </div>`;
+  };
+
+  const score = () => !run || run.n === 0 ? "" : `<div class="sec">
+    <h2>This run</h2>
+    <div class="card">
+      <div class="score">
+        <div><span class="n">${run.yes}</span><span class="lbl">answered</span></div>
+        <div><span class="n">${run.thin}</span><span class="lbl">thin</span></div>
+        <div class="no"><span class="n">${run.no}</span
+          ><span class="lbl">not in the store</span></div>
+        <div style="margin-left:auto;text-align:right">
+          <span class="n" style="font-size:15px;color:var(--dim)"
+            >${when(run.started_at)}</span>
+          <span class="lbl">${run.n} of ${d.checks.length} read</span></div>
+      </div>
+      ${d.runs.length > 1 ? `<div class="trend">${d.runs.slice(1).map(r =>
+        `<span>${esc(when(r.started_at))} · <b>${r.no}</b> of ${r.n} missing</span>`
+        ).join("")}</div>` : ""}
+      <div style="margin-top:12px"><button class="link" id="ckdrop"
+        >discard this run</button></div>
+    </div></div>`;
+
+  /* The point of the whole page, so it is above the questions rather than
+     under them. Not a to-do list — nothing here can be marked done, because
+     the way one of these closes is that you write an update and the next run
+     answers it. */
+  const gap = () => !gaps.length ? "" : `<div class="gap">
+    <b>${gaps.length} thing${gaps.length === 1 ? "" : "s"} the store does not
+      know</b>
+    <div class="dim" style="font-size:12.5px;margin:6px 0 8px">
+      Nothing to press. These close by your writing the note that answers
+      them, and the next run finding it \u2014 the box on the home page takes
+      one with no page attached.</div>
+    <ul style="margin:0;padding-left:18px">${gaps.map(c =>
+      `<li>${esc(c.question)}</li>`).join("")}</ul></div>`;
+
+  const EGS = ["What am I the blocker on?",
+               "What did I promise someone and not do?",
+               "Which decision would I struggle to explain in six months?",
+               "Who have I not spoken to in a month?"];
+
+  const list = () => !d.checks.length ? `<div class="empty">
+      <div>No questions yet.</div>
+      <div class="dim" style="font-size:13px;margin-top:10px;line-height:1.7;
+                  max-width:62ch">
+        A good one is something you ought to be able to answer and would be
+        embarrassed not to — not something you already know these notes say.
+        Four to start from; each one fills the box so you can make it yours
+        before it lands:</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">${EGS.map(q =>
+        `<button data-eg="${esc(q)}">${esc(q)}</button>`).join("")}</div>
+    </div>`
+    : d.checks.map(c => `
+      <div class="q ${c.mark || ""}">
+        <div class="qh">
+          <b>${esc(c.question)}</b>
+          ${c.done ? `<span class="mk">${MARKS.map(([m, lbl, k]) =>
+            `<button data-mark="${m}" data-i="${c.id}"
+              class="${c.mark === m ? `on ${k}` : ""}">${lbl}</button>`).join("")
+            }</span>` : `<span class="dim" style="font-size:11.5px">${
+              c.fresh ? "an answer is ready" : "not asked yet"}</span>`}
+          <button class="link" data-del="${c.id}" title="remove this question"
+            style="font-size:11.5px">×</button>
+        </div>
+        ${c.answer ? `<div style="margin-top:7px">
+          <button class="link" data-open="${c.id}" style="font-size:12px"
+            >${ckOpen === c.id ? "hide the answer" : "read the answer"}</button>${
+          c.done && !c.asked ? `<span class="reuse"> · reused, ${
+            esc(when(c.answer.created_at))}</span>` : ""}</div>
+          ${ckOpen === c.id ? `<div class="ans md">${md(c.answer.answer)}</div>` : ""}`
+        : ""}
+      </div>`).join("");
+
+  const view = () => `
+    <div class="head">
+      <a href="#/" class="dim" style="text-decoration:none">← all projects</a>
+      <span class="sp"></span>
+    </div>
+    <h1 style="margin-bottom:4px">Check</h1>
+    <div class="dim" style="font-size:13px;margin-bottom:18px;max-width:60ch">
+      Questions you keep, asked of every page at once. The answers are the
+      cheap half — what this is for is the ones that come back empty, because
+      that is a list of things to go and write down.
+    </div>
+    <div class="ck">
+      ${gap()}
+      ${plan()}
+      ${score()}
+      <div class="sec"><h2>The questions${d.checks.length
+        ? ` <span class="dim" style="font-weight:400;font-size:14px"
+            >${d.checks.length}</span>` : ""}</h2>
+        <div class="add">
+          <input id="ckq" placeholder="Something you ought to be able to answer"
+            maxlength="400" value="${esc(ckDraft)}">
+          <button id="ckadd">Add</button>
+        </div>
+        ${list()}
+      </div>
+    </div>`;
+
+  app.className = "wrap";
+  app.innerHTML = view();
+
+  app.onclick = async e => {
+    const eg = e.target.closest("[data-eg]");
+    if (eg) { ckDraft = eg.dataset.eg; app.innerHTML = view(); wireCk();
+              return $("#ckq").focus(); }
+    if (e.target.id === "ckadd") {
+      const q = ($("#ckq").value || "").trim();
+      if (!q) return $("#ckq").focus();
+      try { await api("/api/check/new", { question: q }); ckDraft = ""; }
+      catch (err) { ckDraft = q; return toast(err.message, true); }
+      return route();
+    }
+    const del = e.target.closest("[data-del]");
+    if (del) {
+      const c = byId.get(+del.dataset.del);
+      if (!confirm(`Remove "${c.question}"?\n\nIt goes out of every run it was `
+                 + `ever in, including finished ones — a score is only worth `
+                 + `reading against a fixed set.`)) return;
+      await api("/api/check/delete", { id: c.id });
+      return route();
+    }
+    const op = e.target.closest("[data-open]");
+    if (op) { ckOpen = ckOpen === +op.dataset.open ? null : +op.dataset.open;
+              app.innerHTML = view(); return wireCk(); }
+    const mk = e.target.closest("[data-mark]");
+    if (mk) {
+      const c = byId.get(+mk.dataset.i), m = mk.dataset.mark;
+      // Pressing the one that is on takes it off. There is no fourth button
+      // for "unmarked": it is the state you start in, not a judgement.
+      await api("/api/check/mark", { run_id: run.id, check_id: c.id,
+                                     mark: c.mark === m ? null : m });
+      return route();
+    }
+    if (e.target.id === "ckdrop") {
+      if (!confirm("Discard this run?\n\nThe answers stay — they are in Asked "
+                 + "across everything like any other. Only the marks go.")) return;
+      await api("/api/check/run/delete", { id: run.id });
+      return route();
+    }
+    if (e.target.id !== "ckrun" && e.target.id !== "ckresume") return;
+    /* The walk. One question at a time from the browser rather than one long
+       request, for the reasons `post_check_start` gives: half an hour of
+       Claude calls has to be able to say where it has got to, and has to be
+       abandonable without losing what it already asked. */
+    const again = e.target.id === "ckrun";
+    let rid, todo;
+    try {
+      if (again) { const r = await api("/api/check/start");
+                   rid = r.id; todo = r.pending; }
+      else { rid = run.id; todo = d.pending.map(id => byId.get(id)); }
+    } catch (err) { return toast(err.message, true); }
+    for (let i = 0; i < todo.length; i++) {
+      // You left. Stop where we are: the run keeps every mark row it wrote.
+      if (!/^#\/check\b/.test(location.hash)) { ckGoing = null; return; }
+      ckGoing = { done: i, total: todo.length, name: todo[i].question };
+      await route();
+      try { await api("/api/check/ask", { run_id: rid, check_id: todo[i].id }); }
+      catch (err) { ckGoing = null; toast(err.message, true); return route(); }
+    }
+    ckGoing = null;
+    await api("/api/check/end", { run_id: rid });
+    return route();
+  };
+  wireCk();
+}
+
+/* The box keeps what you typed across the re-renders that marking, expanding
+   an answer and every step of a run all cause. */
+function wireCk() {
+  if ($("#ckq")) $("#ckq").oninput = e => { ckDraft = e.target.value; };
+}
+
 async function route() {
   app.onclick = null; app.onchange = null; app.className = "wrap";
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/t\/(\d+)|\/(unfiled))?/);
   try {
     if (m) await projectPage(m[1], m[2] || m[3] || "");
     else if (/^#\/todo\b/.test(location.hash)) await todoPage();
+    else if (/^#\/check\b/.test(location.hash)) await checkPage();
     else await home(/^#\/people\b/.test(location.hash) ? "person" : "project");
   } catch (e) {
     app.innerHTML = `<div class="head"><a href="#/" class="dim"
