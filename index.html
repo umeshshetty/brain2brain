@@ -463,11 +463,25 @@
   }
   #toast.on { transform:translateX(-50%) translateY(0); }
   #toast.warn { background:var(--warn); color:#fff; }
+  /* The catch-up strip. Bottom left, opposite the toast, because one of them
+     says what just happened and the other says what is happening now. */
+  #sync {
+    position:fixed; left:20px; bottom:26px; transform:translateY(90px);
+    background:var(--ink); color:var(--bg); padding:9px 14px; border-radius:9px;
+    font-size:13px; max-width:min(48ch,80vw); transition:transform .18s; z-index:8;
+    display:flex; align-items:center; gap:6px;
+  }
+  #sync.on { transform:translateY(0); }
+  #sync.idle { background:var(--warn-bg); color:var(--warn); }
+  #sync button.link { color:inherit; opacity:.7; text-decoration:underline;
+                      font-size:13px; padding:0 2px; }
+  #sync button.link:hover { color:inherit; opacity:1; }
 </style>
 </head>
 <body>
 <div class="wrap" id="app"></div>
 <div id="toast"></div>
+<div id="sync"></div>
 
 <script>
 const TOKEN = "__TOKEN__";
@@ -2938,6 +2952,129 @@ function wireCk() {
   if ($("#ckq")) $("#ckq").oninput = e => { ckDraft = e.target.value; };
 }
 
+/* ------------------------------------------------------------- catch-up ---
+   The second thing this app does without being asked, and the argument for it
+   is a measurement. A store holding 48 updates and 207,430 characters across
+   37 pages held five derived objects: no summary at all, no meeting brief at
+   all, four page panes and the Now pane. Every one of them cost a click at the
+   moment you were busy writing something down, so capture ran and
+   interpretation never did.
+
+   Four things keep it from being the thing the pull-only design was protecting
+   you from:
+
+   It only ever **refreshes**, never **builds**. A brief you never asked for is
+   not out of date, it is absent, and asking for the first one stays a button
+   (see the to-do page). So this cannot widen what the app spends calls on.
+
+   It waits for **quiet**. The cheap read runs on a cadence and does nothing
+   until the newest update id has stopped moving, so entering a run of notes
+   costs one catch-up at the end rather than one per note.
+
+   It will not start **while you are typing**. Everything here re-reads the
+   view when it finishes, and a re-render under a live textarea takes the
+   cursor out mid-word.
+
+   It is **refusable and visible**. `BRAIN_NO_CATCHUP=1` turns it off for good;
+   the strip turns it off for now and remembers; and it names the thing it is
+   rebuilding, because a call you did not ask for must at least say whose. */
+const SYNC_EVERY = 20000;   // how often the cheap read runs
+const SYNC_CAP = 6;         // calls in one pass, then it looks at the store again
+let syncOn = true, syncSeen = null, syncGoing = null, syncIdle = [];
+try { syncOn = localStorage.getItem("brain.sync") !== "off"; } catch (_) {}
+
+// Each kind is rebuilt through the button's own endpoint. No new prompt, no
+// new cache and no new kind of staleness in this whole feature — it presses
+// the things you would have pressed.
+const SYNC_CALL = {
+  now:     j => ["/api/agenda/refresh", {}],
+  page:    j => ["/api/page/refresh", { project_id: j.project_id }],
+  summary: j => ["/api/summarize", { project_id: j.project_id,
+                                     topic_id: j.topic_id }],
+  // Its own stored `since`, not today's default: the window a brief was built
+  // over is part of what it is, and moving it would answer a different question.
+  prep:    j => ["/api/prep", { project_id: j.project_id, since: j.since }],
+};
+
+/* Mid-sentence, which is not the same as focused. The home view puts the caret
+   in the note box on arrival, so focus alone would mean catch-up never ran on
+   the one view you sit on most — caught in a screenshot, where the strip never
+   appeared. What is actually being protected is the half-typed sentence a
+   re-render would take the cursor out of, and an empty box has none. */
+const typing = () => {
+  const a = document.activeElement;
+  return !!a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName || "")
+         && !!(a.value || "").trim();
+};
+
+function drawSync() {
+  const el = $("#sync");
+  if (syncGoing) {
+    el.className = "on";
+    el.innerHTML = `<span>Catching up · ${syncGoing.done + 1} of ${
+      syncGoing.total} · ${esc(syncGoing.name)}</span>
+      <span class="spin"></span>
+      <button class="link" id="syncoff">stop</button>`;
+  } else if (!syncOn && syncIdle.length) {
+    // Off is a decision, so it is only mentioned when it is costing you
+    // something — and then it says how much.
+    el.className = "on idle";
+    el.innerHTML = `<span>${syncIdle.length} behind · catch-up is off</span>
+      <button class="link" id="syncon">turn it on</button>`;
+  } else { el.className = ""; el.innerHTML = ""; }
+}
+
+function setSync(on) {
+  syncOn = on;
+  try { localStorage.setItem("brain.sync", on ? "on" : "off"); } catch (_) {}
+  // A call already in flight is a subprocess; it cannot be taken back, and
+  // saying "stopped" while one is still running would be a lie.
+  toast(on ? "Catch-up is on — it refreshes what you have already built"
+     : syncGoing ? "Catch-up is off — it will stop after this one"
+     : "Catch-up is off — briefs will say they are behind and wait for you");
+  drawSync();
+}
+
+async function syncRun(jobs) {
+  for (let i = 0; i < jobs.length; i++) {
+    if (!syncOn) break;
+    syncGoing = { done: i, total: jobs.length, name: jobs[i].name };
+    drawSync();
+    const [path, body] = SYNC_CALL[jobs[i].kind](jobs[i]);
+    try { await api(path, body); }
+    catch (e) {
+      // Said out loud and not retried, exactly as the calendar catch-up is. A
+      // catch-up that fails quietly leaves a page describing last week with
+      // nothing on it to say so.
+      syncGoing = null; drawSync();
+      return toast(`Could not catch up ${jobs[i].name} — ${e.message}`, true);
+    }
+  }
+  const n = syncGoing ? syncGoing.done + 1 : 0;
+  syncGoing = null;
+  // Only if you are not mid-sentence. The store is written either way; the
+  // view can wait for the next thing you do.
+  if (!typing()) await route();
+  drawSync();
+  if (n) toast(`Caught up ${n} · ${n} Claude call${n === 1 ? "" : "s"}`);
+}
+
+async function syncTick() {
+  try {
+    if (!CATCHUP || syncGoing) return;
+    let d;
+    // A failed poll is not worth a word — the strip is a convenience, and the
+    // pages say they are behind on their own.
+    try { d = await api("/api/behind"); } catch (_) { return; }
+    syncIdle = d.jobs;
+    if (!syncOn) return drawSync();
+    const quiet = syncSeen === d.newest;
+    syncSeen = d.newest;
+    if (!quiet || !d.jobs.length || typing()) return drawSync();
+    await syncRun(d.jobs.slice(0, SYNC_CAP));
+  } finally { setTimeout(syncTick, SYNC_EVERY); }
+}
+
 async function route() {
   app.onclick = null; app.onchange = null; app.className = "wrap";
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/t\/(\d+)|\/(unfiled))?/);
@@ -2953,7 +3090,20 @@ async function route() {
   }
 }
 addEventListener("hashchange", route);
+$("#sync").onclick = e => {
+  if (e.target.id === "syncoff") setSync(false);
+  // Pressing it is an ask, so it does not then wait for quiet — that wait
+  // exists to keep an *unasked* call off your back while you are still
+  // typing, and you have just said you want this one.
+  if (e.target.id === "syncon") {
+    setSync(true);
+    if (syncIdle.length && !syncGoing) syncRun(syncIdle.slice(0, SYNC_CAP));
+  }
+};
 route();
+// The first look only records where the store is. Nothing is spent
+// until a second look finds it in the same place.
+setTimeout(syncTick, SYNC_EVERY);
 </script>
 </body>
 </html>

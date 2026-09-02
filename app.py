@@ -416,6 +416,13 @@ def api_agenda(q):
     return store.agenda()
 
 
+def api_behind(q):
+    """What has been built and has fallen behind — the catch-up loop's whole
+    input. A read with no Claude call in it, polled on a cadence, so it must
+    stay cheap: it reads the caches and counts, never the update bodies."""
+    return store.behind()
+
+
 def post_agenda(b):
     """Rebuild the cross-project agenda: one Claude call over every project.
 
@@ -614,6 +621,7 @@ def post_prep(b):
 READS = {"/api/projects": api_projects,
          "/api/project": api_project,
          "/api/agenda": api_agenda,
+         "/api/behind": api_behind,
          "/api/search": api_search,
          "/api/me": api_me,
          "/api/asked": api_asked,

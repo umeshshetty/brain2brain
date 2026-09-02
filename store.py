@@ -2204,3 +2204,106 @@ def delete_run(run_id: int) -> dict:
         return {"deleted": run_id}
     finally:
         conn.close()
+
+
+# ------------------------------------------------------------------ catch-up
+# What has already been built, and what the store has moved under since.
+#
+# Everything derived here is a click away from being rebuilt, and *Now* has
+# always made exactly one exception: a pane that says "today" is a lie the next
+# morning, so the day turning over rebuilds it once, unasked. This is that
+# exception widened from the calendar to the updates, and the argument for it
+# is a measurement rather than a preference — a store holding 48 updates and
+# 207,430 characters across 37 pages held **five** derived objects: no summary
+# at all, no meeting brief at all, four page panes and the Now pane. Every one
+# of them cost a click at the moment you were busy writing something down, so
+# capture ran and interpretation simply never did.
+#
+# What keeps it honest is that it can only **refresh**, never **build**. A
+# brief you never asked for is not out of date, it is absent, and asking for
+# one is a deliberate first act — the same rule the calendar catch-up already
+# holds, for the same reason. So this can never widen the set of things the app
+# spends a call on; it can only bring the set you already chose back up to what
+# your updates now say. Building the first one stays a button.
+
+def _summary_scope(conn, pid: int, tid) -> tuple[int, int]:
+    """The newest id and the count in a summary's scope — the same two numbers
+    the page reader compares a cached brief against, and they must stay the
+    same two or a brief would be called stale in one place and fresh in the
+    other. A topic sees only its own page's updates; a guest belongs to no
+    topic, which is why it counts towards the project scope and no other."""
+    if tid is None:
+        ids = _page_scope(conn, pid)
+    else:
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM updates WHERE project_id = ? AND topic_id = ?",
+            (pid, tid))]
+    return (max(ids) if ids else 0), len(ids)
+
+
+def behind() -> dict:
+    """Every built-and-stale cache, oldest first, with the Now pane ahead of
+    all of them because it is the one thing that claims to be about today.
+
+    `newest` is the newest update id in the store. The caller watches it to
+    decide when the store has gone quiet: catching up in the middle of you
+    entering a run of notes would spend a call on a picture you are still
+    halfway through changing.
+    """
+    conn = connect()
+    try:
+        newest = conn.execute(
+            "SELECT ifnull(max(id), 0) FROM updates").fetchone()[0]
+        total = conn.execute("SELECT count(*) FROM updates").fetchone()[0]
+        names = {r["id"]: r["name"] for r in _rows(conn.execute(
+            "SELECT id, name FROM projects"))}
+        tnames = {r["id"]: r["name"] for r in _rows(conn.execute(
+            "SELECT id, name FROM topics"))}
+        summaries = _rows(conn.execute(
+            "SELECT project_id, topic_id, through_update_id, read_updates,"
+            " created_at FROM summaries"))
+        preps = [r[0] for r in conn.execute("SELECT project_id FROM preps")]
+    finally:
+        conn.close()
+
+    jobs = []
+    ag = agenda()
+    if ag["built"] and ag["stale"]:
+        jobs.append({"kind": "now", "project_id": None, "topic_id": None,
+                     "name": "the Now pane", "behind": ag["behind"],
+                     "created_at": ag["created_at"]})
+    for pg in all_page_agendas():
+        if pg["built"] and pg["stale"]:
+            jobs.append({"kind": "page", "project_id": pg["id"],
+                         "topic_id": None, "name": f"{pg['name']} — dates",
+                         "behind": pg["behind"], "created_at": pg["created_at"]})
+
+    conn = connect()
+    try:
+        for s in summaries:
+            top, count = _summary_scope(conn, s["project_id"], s["topic_id"])
+            if top <= s["through_update_id"] and count == s["read_updates"]:
+                continue
+            where = names.get(s["project_id"], "?")
+            if s["topic_id"] is not None:
+                where += f" — {tnames.get(s['topic_id'], '?')}"
+            jobs.append({"kind": "summary", "project_id": s["project_id"],
+                         "topic_id": s["topic_id"], "name": f"a brief on {where}",
+                         "behind": max(0, count - s["read_updates"]),
+                         "created_at": s["created_at"]})
+    finally:
+        conn.close()
+
+    for pid in preps:
+        pr = prep(pid)
+        if pr["built"] and pr["stale"]:
+            jobs.append({"kind": "prep", "project_id": pid,
+                         "topic_id": None, "since": pr["since"],
+                         "name": f"the {names.get(pid, '?')} meeting brief",
+                         "behind": pr["behind"], "created_at": pr["created_at"]})
+
+    # Oldest cache first, so the thing that has been wrong longest is put right
+    # first — but the Now pane ahead of everything, because it is the only one
+    # of these that is read before you have decided what you are looking for.
+    jobs.sort(key=lambda j: (j["kind"] != "now", j["created_at"]))
+    return {"newest": newest, "total": total, "jobs": jobs}

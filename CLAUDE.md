@@ -86,7 +86,8 @@ which the spinner already says. That is why `AI_LABEL` in `index.html` and
 including the em dash in a topic scope.
 
 `BRAIN_MODEL` pins a model. `BRAIN_AI_TIMEOUT` is the ceiling, default 180s.
-`BRAIN_NO_CATCHUP=1` refuses the one unasked call (see *Now*).
+`BRAIN_NO_CATCHUP=1` refuses both unasked calls (see *Now* and
+*Catching up*).
 
 ## People
 
@@ -864,10 +865,11 @@ reads as *"there was nothing else"*, which is the one thing it must not do.
 **The cross-project pane is on the home view only.** Inside a project you want
 that project's dates, not everyone's — which is a second pane, below.
 
-**It rebuilds itself once when the calendar has moved past it,** and that is the
-only thing in this app that spends a Claude call without being asked. *Review
-finding, 2026-08-28: everything here is pull — the app can know the cutover is
-today and will not say so until you open the page and press refresh.*
+**It rebuilds itself once when the calendar has moved past it,** and it was for
+a long time the only thing in this app that spent a Claude call without being
+asked — see *Catching up* for the second. *Review finding, 2026-08-28:
+everything here is pull — the app can know the cutover is today and will not say
+so until you open the page and press refresh.*
 
 The trigger is **outdated and nothing else**. Being *behind* is a judgement — a
 new update might be worth a rebuild or might not, and it is your click to
@@ -1158,6 +1160,50 @@ happens when you ask.
 The watermark alone is not enough — it only notices the set growing. A brief
 also records how many updates it read, so deleting one, or linking one in from
 another page, stales it too (see *Linking*).
+
+## Catching up
+
+**User request, 2026-09-02.** *"can we have some auto sync of notes because I
+need to click everytime I enter a new note. Maybe a cadence to run if there is
+a change or new entry, new note, new status update or anything new."*
+
+The measurement is the argument. A store holding **48 updates and 207,430
+characters across 37 pages held five derived objects**: no summary at all, no
+meeting brief at all, four page panes and the Now pane. Every one of them cost
+a click at the moment you were busy writing something down — so capture ran
+exactly as designed, and interpretation simply never happened. The pull-only
+rule was protecting a budget nobody was spending.
+
+So the calendar exception widens to the updates: a cheap read on a cadence
+(`/api/behind`), and when something you already built has fallen behind, it is
+rebuilt. Four things keep it from being what pull-only was guarding against.
+
+| | |
+|---|---|
+| **It refreshes, never builds** | A brief you never asked for is not out of date, it is *absent*, and asking for the first one is a deliberate first act — the same rule the calendar catch-up already held. So this cannot widen the set of things the app spends a call on; it can only bring the set you already chose back up to what your updates now say. On the live store that is the difference between ~5 calls and ~37. First builds stay the button the to-do page already has. |
+| **It waits for quiet** | The poll does nothing until the newest update id has stopped moving. Entering a run of notes therefore costs one catch-up at the end rather than one per note, which is what makes *on every note* affordable at all. |
+| **It will not start mid-sentence** | Everything here re-reads the view when it finishes, and a re-render under a live textarea takes the cursor out mid-word. *Focus is not the test, and a screenshot caught that:* the home view puts the caret in the note box on arrival, so blocking on focus alone meant catch-up never ran on the view you sit on most. What is protected is a half-typed sentence, and an empty box has none. |
+| **It is refusable and it says whose** | `BRAIN_NO_CATCHUP=1` turns it off for good; the strip turns it off for now and remembers. A pass is capped at six so it looks at the store again rather than grinding on, a failure is said out loud and not retried, and leaving it off is only mentioned while it is costing you something — *"3 behind · catch-up is off"*. |
+
+**It presses the buttons you would have pressed.** Each kind goes through its
+own existing endpoint — `/api/agenda/refresh`, `/api/page/refresh`,
+`/api/summarize`, `/api/prep` — so there is no new prompt, no new cache and no
+new kind of staleness in the whole feature. `store.behind()` is one 12ms read
+that reads the caches and counts, never the update bodies. A meeting brief is
+rebuilt over **its own stored `since`**, not today's default: the window a
+brief was built over is part of what it is, and moving it would answer a
+different question.
+
+**A note typed in a shell is caught up by an open tab.** The loop watches the
+store rather than its own writes, so `python3 app.py add -p GoBMP "…"`
+stales the page's pane and the tab rebuilds it with nobody pressing anything.
+Verified end to end against a live server: a shell note, then `/api/behind`
+naming *GoBMP — dates*, then the browser making the call on its own and the
+pane coming back with the new note in it.
+
+**Pressing *turn it on* does not then wait for quiet.** The wait exists to keep
+an unasked call off your back while you are still typing, and you have just
+said you want this one.
 
 ## Boundaries
 
