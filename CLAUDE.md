@@ -644,7 +644,14 @@ disposable like every other derived row.
 | **Stale the usual two ways** | The `through_update_id` watermark notices the set growing, `read_updates` notices it changing. There is no third axis — unlike the Now pane, an answer never claimed to be about today. |
 
 **It is offered in the search box, and the difference between the two is
-stated.** You type once; search answers underneath instantly, and above it sits
+stated.** *User note, 2026-09-02: "why dont I have an AI search across
+everything?"* — it was there and had been asked once in the store's life, by
+me, while demonstrating it. The offer only appears at the second keystroke, so
+the placeholder was the whole of what a first look had to go on, and it said
+*"Search everything — every update on every page"*: true about half the box.
+It now says **"Search everything, or ask Claude about all of it"**, because a
+feature you reach only by typing into something that does not mention it is a
+feature you do not have. You type once; search answers underneath instantly, and above it sits
 *Ask across everything — one call, up to a minute or two*. Search is a
 substring match that reads nothing and writes nothing and tells you where you
 said a word. This is a Claude call over every page and tells you what they add

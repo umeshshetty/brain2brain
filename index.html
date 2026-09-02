@@ -1264,7 +1264,7 @@ async function home(kind) {
     <div>
       <div class="head"><h1>Brain</h1></div>
       <input type="text" id="q" class="search" autocomplete="off" spellcheck="false"
-        placeholder="Search everything — every update on every page   ·   press /"
+        placeholder="Search everything, or ask Claude about all of it   ·   press /"
         value="${esc(searchQ)}">
       ${noteBox()}
       <div id="sout"></div>
@@ -1312,8 +1312,9 @@ async function home(kind) {
         <div class="card"><a href="#/check" style="text-decoration:none"
           ><b>A fixed set of questions \u2192</b></a>
           <div class="dim" style="font-size:12.5px;margin-top:5px">
-            The same call as above, asked of questions you keep rather than one
-            you have right now — so that what it <i>cannot</i> answer is
+            The same read as <b>Ask across everything</b> \u2014 the button in
+            the search box \u2014 but asked of questions you keep rather than one
+            you have this minute, so that what it <i>cannot</i> answer is
             something you can see.</div></div>
       </div>
       ${asked.length ? `<div class="sec">
